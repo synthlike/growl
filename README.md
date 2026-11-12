@@ -110,21 +110,47 @@ repo.hurl:10: undefined variable owner (captured by the request at line 1; run u
 | --- | --- |
 | `-line n` | Run only the request around line `n` |
 | `-to n` | Run the requests up to and including the one around line `n` |
+| `-variable name=value` | Define a variable; repeat for more |
+| `-variables-file file` | Read `name=value` lines from a file; repeat for more |
 | `-stdin` | Read the file's text from stdin; the argument only names it (for unsaved editor buffers) |
 | `-i` | Also print response headers |
 | `-timeout d` | Give up on a request after `d`, such as `30s` (default: never) |
 
 ## Variables and secrets
 
-`{{name}}` reads from the environment: `GROWL_VARIABLE_name` first, then
-`HURL_VARIABLE_name`, then plain `name`. So the variables your shell or
-`.env` script already exports just work:
+`{{name}}` fills in a variable. Variables come from the command line, from a
+variables file, or from the environment:
 
 ```hurl
 GET {{API_URL}}/me
 Authorization: Bearer {{API_TOKEN}}
 HTTP 200
 ```
+
+```sh
+growl -variable API_URL=http://localhost:8080 me.hurl
+growl -variables-file staging.env me.hurl
+API_URL=http://localhost:8080 growl me.hurl
+```
+
+A variables file holds one `name=value` per line. Blank lines and lines
+starting with `#` are skipped:
+
+```sh
+# staging.env
+API_URL=https://staging.example.com
+ORDER_ID="1042"
+```
+
+An unquoted value takes the type it looks like, so `7` equals the number 7
+in a check. In double quotes it stays a string. When a name is defined in
+several places, a capture wins, then `-variable`, then the variables files
+(the last one first), then the environment: `GROWL_VARIABLE_name`,
+`HURL_VARIABLE_name`, then plain `name`. Commands work the same way with
+real hurl, which takes the same flags.
+
+Keep secrets out of variables files. Pass them through the environment
+instead, where your shell, CI or a password manager can provide them.
 
 A variable that isn't set is an error, never an empty string. `{{newUuid}}`
 and `{{newDate}}` are built in, for request IDs and idempotency keys.
@@ -166,7 +192,7 @@ unsupported feature and its line. It never quietly skips part of a file.
 ## Differences from hurl
 
 - Plain environment variables work, as well as `GROWL_VARIABLE_name`. hurl
-  reads only `HURL_VARIABLE_name` and `--variable`.
+  reads only `HURL_VARIABLE_name`, `--variable` and `--variables-file`.
 - `-line`, `-to` and `-stdin` are growl's own options.
 - Output: growl always prints each request and response, and hides secrets.
   Exit codes match hurl: 1 usage, 2 parse, 3 runtime, 4 assert.
@@ -191,6 +217,11 @@ match = *.hurl
 input = file
 cmd   = growl -stdin -line "$line" "$file"
 ```
+
+For URLs and tokens, use hiss's environments (`[env]` sections with a
+`source` script). The active environment's script runs before each request,
+so `:env staging` points every `.hurl` file at staging. The script can fetch
+secrets fresh each time, for example with `op read`.
 
 ## Staying compatible with hurl
 
