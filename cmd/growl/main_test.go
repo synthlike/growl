@@ -135,3 +135,51 @@ GET {{base}}/last
 		t.Errorf("-line with -to: code %d, want 1", code)
 	}
 }
+
+func TestVariableFlags(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.RawQuery
+		io.WriteString(w, `{"id": 7}`)
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	write := func(name, text string) string {
+		p := filepath.Join(dir, name)
+		os.WriteFile(p, []byte(text), 0o644)
+		return p
+	}
+	a := write("a.env", "# staging\nbase="+srv.URL+"\nx=file-a\ny=file-a\nid=7\n")
+	b := write("b.env", "y=file-b\nz=file-b\n")
+	src := "GET {{base}}/?x={{x}}&y={{y}}&z={{z}}&w={{w}}\nHTTP 200\n[Asserts]\njsonpath \"$.id\" == {{id}}\n"
+	env := map[string]string{"w": "env", "z": "env", "HURL_VARIABLE_x": "env"}
+	getenv := func(k string) (string, bool) { v, ok := env[k]; return v, ok }
+	call := func(args ...string) (int, string) {
+		var errOut strings.Builder
+		code := run(context.Background(), append(args, "-stdin", "a.hurl"), strings.NewReader(src), io.Discard, &errOut, getenv, nil)
+		return code, errOut.String()
+	}
+
+	// -variable beats files, a later file beats an earlier one, files beat
+	// the environment, and an unquoted 7 is a number.
+	code, errOut := call("--variables-file", a, "--variable", "x=cli", "-variables-file", b)
+	if code != 0 || got != "x=cli&y=file-b&z=file-b&w=env" {
+		t.Errorf("code %d, query %q, err %s", code, got, errOut)
+	}
+	// A quoted "7" is a string, so it isn't the number 7.
+	if code, _ = call("--variables-file", a, "--variable", `id="7"`); code != 4 {
+		t.Errorf("quoted id: code %d, want 4", code)
+	}
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--variable", "novalue"}, "growl: -variable: missing value for variable novalue\n"},
+		{[]string{"--variables-file", write("bad.env", "a=1\nb=\"open\n")}, "growl: " + filepath.Join(dir, "bad.env") + ": line 2: the value of b should end with a double quote\n"},
+		{[]string{"--variables-file", filepath.Join(dir, "nope.env")}, "growl: open " + filepath.Join(dir, "nope.env") + ": no such file or directory\n"},
+	} {
+		if code, errOut = call(tc.args...); code != 1 || errOut != tc.want {
+			t.Errorf("%v: code %d, err %q, want %q", tc.args, code, errOut, tc.want)
+		}
+	}
+}
