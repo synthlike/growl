@@ -50,6 +50,9 @@ func newServer() *server {
 		s.last = request{r.Method, r.URL.RawQuery, r.Header.Get("Content-Type"), string(b)}
 		s.mu.Unlock()
 	})
+	mux.HandleFunc("/num", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"v": `+r.URL.Query().Get("v")+`}`) // any raw JSON value
+	})
 	mux.HandleFunc("/redirect", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/shop", http.StatusFound)
 	})
@@ -117,6 +120,8 @@ func TestMatchesHurl(t *testing.T) {
 			gr := srv.take()
 			if h != g || hr != gr {
 				t.Errorf("%s:\nhurl:  exit %d, %+v\ngrowl: exit %d, %+v", file, h, hr, g, gr)
+			} else {
+				t.Logf("%s: both exit %d, server saw %+v", filepath.Base(file), h, hr)
 			}
 		}
 	})
