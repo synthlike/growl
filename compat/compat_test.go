@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -103,6 +104,38 @@ func TestMatchesHurl(t *testing.T) {
 		}
 	})
 
+	t.Run("variables", func(t *testing.T) {
+		files, _ := filepath.Glob("testdata/variables/*.hurl")
+		if len(files) == 0 {
+			t.Fatal("no variable cases")
+		}
+		for _, file := range files {
+			src, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stem := strings.TrimSuffix(file, ".hurl")
+			var extra []string
+			if _, err := os.Stat(stem + ".env"); err == nil {
+				extra = append(extra, "--variables-file", stem+".env")
+			}
+			if b, err := os.ReadFile(stem + ".args"); err == nil {
+				for _, v := range strings.Split(strings.TrimSuffix(string(b), "\n"), "\n") {
+					extra = append(extra, "--variable", v)
+				}
+			}
+			h := runHurl(t, bin, dir, string(src), vars, extra...)
+			hr := srv.take()
+			g := runGrowl(string(src), vars, extra...)
+			gr := srv.take()
+			if h != g || hr != gr {
+				t.Errorf("%s:\nhurl:  exit %d, %+v\ngrowl: exit %d, %+v", file, h, hr, g, gr)
+			} else {
+				t.Logf("%s: both exit %d, server saw %+v", filepath.Base(file), h, hr)
+			}
+		}
+	})
+
 	t.Run("requests", func(t *testing.T) {
 		files, _ := filepath.Glob("testdata/requests/*.hurl")
 		if len(files) == 0 {
@@ -127,9 +160,10 @@ func TestMatchesHurl(t *testing.T) {
 	})
 }
 
-// runHurl runs src with real hurl and returns its exit code. HURL_*
-// variables from the caller's environment are left out.
-func runHurl(t *testing.T, bin, dir, src string, vars map[string]string) int {
+// runHurl runs src with real hurl, with vars as --variable flags and any
+// extra arguments, and returns its exit code. HURL_* variables from the
+// caller's environment are left out.
+func runHurl(t *testing.T, bin, dir, src string, vars map[string]string, extra ...string) int {
 	t.Helper()
 	file := filepath.Join(dir, "case.hurl")
 	if err := os.WriteFile(file, []byte(src), 0o644); err != nil {
@@ -141,6 +175,7 @@ func runHurl(t *testing.T, bin, dir, src string, vars map[string]string) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
+	args = append(args, extra...)
 	cmd := exec.CommandContext(ctx, bin, append(args, file)...)
 	for _, kv := range os.Environ() {
 		if !strings.HasPrefix(kv, "HURL_") {
@@ -158,8 +193,33 @@ func runHurl(t *testing.T, bin, dir, src string, vars map[string]string) int {
 }
 
 // runGrowl runs src with growl's parser and runner and returns the exit
-// code growl would.
-func runGrowl(src string, vars map[string]string) int {
+// code growl would. vars come from the environment; extra holds the same
+// --variables-file and --variable arguments hurl gets.
+func runGrowl(src string, vars map[string]string, extra ...string) int {
+	flags := map[string]any{}
+	for i := 0; i+1 < len(extra); i += 2 {
+		switch extra[i] {
+		case "--variables-file":
+			b, err := os.ReadFile(extra[i+1])
+			if err != nil {
+				return 1
+			}
+			vs, err := hurl.ParseVariables(string(b))
+			if err != nil {
+				return 1
+			}
+			maps.Copy(flags, vs)
+		}
+	}
+	for i := 0; i+1 < len(extra); i += 2 {
+		if extra[i] == "--variable" {
+			name, v, err := hurl.ParseVariable(extra[i+1])
+			if err != nil {
+				return 1
+			}
+			flags[name] = v
+		}
+	}
 	code := func(err error) int {
 		if e, ok := errors.AsType[*hurl.Error](err); ok {
 			return e.Code
@@ -173,6 +233,7 @@ func runGrowl(src string, vars map[string]string) int {
 	r := &hurl.Runner{
 		Client: hurl.NewClient(20 * time.Second),
 		Out:    io.Discard,
+		Vars:   flags,
 		Lookup: func(k string) (string, bool) { v, ok := vars[k]; return v, ok },
 	}
 	for _, e := range es {
