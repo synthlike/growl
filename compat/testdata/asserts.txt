@@ -1,0 +1,85 @@
+# One assert per line, run against GET {{base}}/shop with HTTP 200 (see
+# compat_test.go for the response). {{id}} is 7 and {{name}} is Dune.
+status == 200
+status < 300
+duration < 10000
+jsonpath "$.id" == 7
+jsonpath "$.id" == {{id}}
+jsonpath "$.id" != "7"
+jsonpath "$.id" == "7"
+jsonpath "$.id" == 8
+jsonpath "$.id" == 7.0
+jsonpath "$.price" == 9.5
+jsonpath "$.price" > 9
+jsonpath "$.price" isFloat
+jsonpath "$.one" isFloat
+jsonpath "$.one" isInteger
+jsonpath "$.one" == 1
+jsonpath "$.big" == 12345678901234567890
+jsonpath "$.big" == 12345678901234567891
+jsonpath "$.id" isInteger
+jsonpath "$.id" isNumber
+jsonpath "$.name" == "{{name}}"
+jsonpath "$.name" startsWith "Du"
+jsonpath "$.name" endsWith "ne"
+jsonpath "$.name" contains "un"
+jsonpath "$.name" matches /^D.n/
+jsonpath "$.name" matches "^D"
+jsonpath "$.name" > "Cat"
+jsonpath "$.tags" includes "sf"
+jsonpath "$.tags" contains "sf"
+jsonpath "$.tags" count == 2
+jsonpath "$.tags[*]" count == 2
+jsonpath "$.meta" count == 1
+jsonpath "$.name" count == 1
+jsonpath "$.tags" count == 3
+jsonpath "$.tags" isList
+jsonpath "$.meta" isObject
+jsonpath "$.owner" == null
+jsonpath "$.owner" exists
+jsonpath "$.nope" not exists
+jsonpath "$.nope" exists
+jsonpath "$..nope" not exists
+jsonpath "$..nope" exists
+jsonpath "$.tags[*]" exists
+jsonpath "$.empty[*]" exists
+jsonpath "$.tags[5]" not exists
+jsonpath "$.nope" == 1
+jsonpath "$.nope" not == 1
+jsonpath "$.ok" == true
+jsonpath "$.ok" isBoolean
+jsonpath "$.made" isIsoDate
+jsonpath "$.ip" isIpv4
+jsonpath "$.ip" isIpv6
+jsonpath "$.uuid" isUuid
+jsonpath "$.empty" isEmpty
+jsonpath "$.name" not isEmpty
+jsonpath "$.name" isString
+jsonpath "$.tags" == "sf"
+jsonpath "$.tags[0]" == "sf"
+jsonpath "$.*" count > 3
+jsonpath "$..title" count == 0
+header "Set-Thing" == "b=2"
+header "Set-Thing" == "a=1"
+header "Set-Thing" == "c=3"
+header "Set-Thing" not == "c=3"
+header "Set-Thing" not == "a=1"
+header "Nope" not exists
+header "Nope" exists
+header "Content-Type" contains "json"
+body contains "classic"
+header "Set-Thing" includes "a=1"
+header "Set-Thing" count == 2
+jsonpath "$..title" not exists
+jsonpath "$.tags[9]" not == 1
+jsonpath "$.nope" not isEmpty
+jsonpath "$.nope" not contains "x"
+jsonpath "$.name" includes "un"
+jsonpath "$.empty[*]" not exists
+jsonpath "$.tags[*]" count == 2
+jsonpath "$.meta.a" == 1.00
+jsonpath "$.name" < "Emma"
+jsonpath "$.owner" not exists
+jsonpath "$.ok" == "true"
+jsonpath "$.price" != 9.5
+status != 404

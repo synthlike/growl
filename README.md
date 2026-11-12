@@ -63,6 +63,13 @@ Problems print as `file:line: message`, with every failing assert of a
 request on its own line. Exit codes follow hurl: 1 usage, 2 parse, 3 runtime,
 4 assert.
 
+## Compatibility
+
+`go test ./compat/` runs the cases in `compat/testdata` (asserts, and request
+shapes the server records) through real hurl and through growl, and fails
+where they disagree. It's skipped when hurl isn't installed. Last checked
+against hurl 8.1.0.
+
 ## In hiss
 
 `-stdin` reads the text from stdin, so unsaved edits count; the file argument
