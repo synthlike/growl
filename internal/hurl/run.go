@@ -22,9 +22,13 @@ import (
 // entry are available to the entries it runs after it.
 type Runner struct {
 	Client  *http.Client // should not follow redirects, like hurl
-	Lookup  Lookup       // environment variables
+	Lookup  Lookup       // environment variables, after Vars
 	Out     io.Writer
 	Headers bool // print response headers
+
+	// Vars holds variables from --variable and --variables-file, as
+	// ParseVariable and ParseVariables return them. They win over Lookup.
+	Vars map[string]any
 
 	// CapturedAt maps names captured by entries that won't run to the
 	// line of the entry, for the undefined-variable hint.
@@ -47,14 +51,17 @@ func NewClient(timeout time.Duration) *http.Client {
 	}
 }
 
-// value finds a template variable: a capture first, as captures override
-// variables in hurl, then the environment.
+// value finds a template variable as hurl does: a capture first, then
+// Vars, then the environment.
 func (r *Runner) value(name string) (any, bool) {
 	if v, ok := r.captures[name]; ok {
 		return v, true
 	}
+	if v, ok := r.Vars[name]; ok {
+		return v, true
+	}
 	if s, ok := r.Lookup(name); ok {
-		return envString(s), true
+		return fromEnv(s), true
 	}
 	return nil, false
 }
@@ -63,7 +70,7 @@ func (r *Runner) hint(name string) string {
 	if line, ok := r.CapturedAt[name]; ok {
 		return fmt.Sprintf("captured by the request at line %d; run up to here with -to", line)
 	}
-	return fmt.Sprintf("set GROWL_VARIABLE_%[1]s, HURL_VARIABLE_%[1]s or %[1]s", name)
+	return fmt.Sprintf("pass --variable %[1]s=… or set GROWL_VARIABLE_%[1]s, HURL_VARIABLE_%[1]s or %[1]s", name)
 }
 
 // Run sends e, prints the response, takes its captures and checks it.
