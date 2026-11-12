@@ -80,15 +80,19 @@ func (r *Runner) request(ctx context.Context, e Entry) (*http.Request, error) {
 		if err != nil {
 			return nil, &Error{Line: e.Line, Msg: err.Error(), Code: ExitRuntime}
 		}
-		q := pu.Query()
+		// Append to the URL's own query, in order, with spaces as %20: as hurl does.
+		q := []string{}
+		if pu.RawQuery != "" {
+			q = append(q, pu.RawQuery)
+		}
 		for _, p := range e.Query {
 			v, err := expand(p.Value, p.Line, r.Lookup)
 			if err != nil {
 				return nil, err
 			}
-			q.Add(p.Name, v)
+			q = append(q, queryEscape(p.Name)+"="+queryEscape(v))
 		}
-		pu.RawQuery = q.Encode()
+		pu.RawQuery = strings.Join(q, "&")
 		u = pu.String()
 	}
 	var body io.Reader
@@ -186,17 +190,25 @@ func (r *Runner) check(want *Response, resp *http.Response, data []byte, dur tim
 				return err
 			}
 		}
-		var got []any // a header can have several values; any may pass
+		var got any = none{}
 		switch a.Query {
 		case "status":
-			got = []any{json.Number(strconv.Itoa(resp.StatusCode))}
+			got = json.Number(strconv.Itoa(resp.StatusCode))
 		case "duration":
-			got = []any{json.Number(strconv.FormatInt(dur.Milliseconds(), 10))}
+			got = json.Number(strconv.FormatInt(dur.Milliseconds(), 10))
 		case "body":
-			got = []any{string(data)}
-		case "header":
-			for _, v := range resp.Header.Values(a.Arg) {
-				got = append(got, v)
+			got = string(data)
+		case "header": // several values make a list, as in hurl
+			switch vs := resp.Header.Values(a.Arg); len(vs) {
+			case 0:
+			case 1:
+				got = vs[0]
+			default:
+				l := make([]any, len(vs))
+				for i, v := range vs {
+					l[i] = v
+				}
+				got = l
 			}
 		case "jsonpath":
 			if !decoded {
@@ -207,44 +219,25 @@ func (r *Runner) check(want *Response, resp *http.Response, data []byte, dur tim
 				fail(a.Line, "%s: the body is not JSON: %v", a.Text, docErr)
 				continue
 			}
-			nodes := a.Path.eval(doc)
-			switch {
-			case !a.Path.definite:
-				got = []any{nodes}
-			case len(nodes) == 1:
-				got = []any{nodes[0]}
+			// Selecting nothing is none, even for a wildcard, as in hurl.
+			switch nodes := a.Path.eval(doc); {
+			case len(nodes) == 0:
+			case a.Path.definite:
+				got = nodes[0]
+			default:
+				got = nodes
 			}
-		}
-		if len(got) == 0 {
-			got = []any{none{}}
 		}
 		if a.Count {
-			for i, g := range got {
-				switch v := g.(type) {
-				case []any:
-					got[i] = json.Number(strconv.Itoa(len(v)))
-				case map[string]any:
-					got[i] = json.Number(strconv.Itoa(len(v)))
-				case none:
-				default:
-					fail(a.Line, "%s: count needs a list or object, got %s", a.Text, show(v))
-					got = nil
-				}
-			}
-			if got == nil {
+			l, ok := got.([]any)
+			if !ok {
+				fail(a.Line, "%s: count needs a list, got %s", a.Text, show(got))
 				continue
 			}
+			got = json.Number(strconv.Itoa(len(l)))
 		}
-		ok := slices.ContainsFunc(got, func(g any) bool { return a.check(g, w) })
-		if a.Not && len(got) > 1 { // not: no value may pass the positive test
-			ok = !slices.ContainsFunc(got, func(g any) bool { return !a.check(g, w) })
-		}
-		if !ok {
-			shown := make([]string, len(got))
-			for i, g := range got {
-				shown[i] = show(g)
-			}
-			fail(a.Line, "%s: got %s", a.Text, strings.Join(shown, ", "))
+		if !a.check(got, w) {
+			fail(a.Line, "%s: got %s", a.Text, show(got))
 		}
 	}
 	return errors.Join(errs...)
@@ -262,4 +255,9 @@ func decodeJSON(data []byte) (any, error) {
 		return nil, fmt.Errorf("data after the JSON value")
 	}
 	return v, nil
+}
+
+// queryEscape escapes a query key or value with spaces as %20.
+func queryEscape(s string) string {
+	return strings.ReplaceAll(url.QueryEscape(s), "+", "%20")
 }

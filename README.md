@@ -25,18 +25,22 @@ Every growl file is meant to run unchanged under real hurl.
 
 ## What it supports
 
-- Requests: method and URL, headers, `[Query]`, JSON bodies, ```` ``` ````
-  text bodies and `` `oneline` `` bodies. JSON bodies get
-  `Content-Type: application/json` unless you set one.
+- Requests: method and URL, headers, `[Query]` (appended to the URL's own
+  query), JSON bodies, ```` ``` ```` text bodies and `` `oneline` `` bodies.
+  JSON and ```` ```json ```` bodies get `Content-Type: application/json`
+  unless you set one.
 - Responses: `HTTP 200`, `HTTP/2 200`, `HTTP *`, header lines under it
   (which must match), and `[Asserts]`.
 - Asserts: the queries `status`, `header "Name"`, `jsonpath "$.path"`, `body`
   and `duration` (ms); the `count` filter; `not`; the predicates `==` `!=`
-  `>` `>=` `<` `<=` `startsWith` `endsWith` `contains` `includes` `matches`
+  `>` `>=` `<` `<=` `startsWith` `endsWith` `contains` `matches`
   `exists` `isEmpty` `isBoolean` `isNumber` `isInteger` `isFloat` `isString`
   `isList` `isObject` `isIsoDate` `isUuid` `isIpv4` `isIpv6`. Values are
   `"strings"`, numbers, `true`/`false`, `null`, `/regex/` and `{{variables}}`.
-  A header assert passes if any of the header's values does.
+  `contains` works on strings and lists (`includes`, deprecated in hurl, on
+  lists only). As in hurl, a header with several values is a list, a query
+  that selects nothing is none, where every predicate fails and every `not`
+  one passes, and `count` takes lists only.
 - JSONPath: `$`, `.name`, `['name']`, `[0]`, `[-1]`, `.*`, `[*]`, `..name`.
   No filters, slices or unions.
 - Templates: `{{name}}` reads `GROWL_VARIABLE_name`, then `HURL_VARIABLE_name`,

@@ -88,3 +88,43 @@ func TestNoRedirects(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+func TestRequestLikeHurl(t *testing.T) {
+	var query, ctype, body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		query, ctype, body = r.URL.RawQuery, r.Header.Get("Content-Type"), string(b)
+	}))
+	defer srv.Close()
+	r := &Runner{Client: NewClient(0), Out: io.Discard, Lookup: func(string) (string, bool) { return "", false }}
+	send := func(src string) {
+		t.Helper()
+		es, err := Parse(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Run(context.Background(), es[0]); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// [Query] appends to the URL's query in order, spaces as %20.
+	send("GET " + srv.URL + "/?z=1\n[Query]\nb: 2\nq: a b&c+d\n")
+	if query != "z=1&b=2&q=a%20b%26c%2Bd" {
+		t.Errorf("query = %q", query)
+	}
+	// A JSON body ends at its closing bracket.
+	send("POST " + srv.URL + "\n{\"a\": [1,\n 2]}  \n")
+	if body != "{\"a\": [1,\n 2]}" || ctype != "application/json" {
+		t.Errorf("JSON body = %q, %q", body, ctype)
+	}
+	// ```json is sent as JSON; ``` as is, without a type.
+	send("POST " + srv.URL + "\n```json\n{\"a\": 1}\n```\n")
+	if body != "{\"a\": 1}\n" || ctype != "application/json" {
+		t.Errorf("```json body = %q, %q", body, ctype)
+	}
+	send("POST " + srv.URL + "\n```\nhi\n```\n")
+	if body != "hi\n" || ctype != "" {
+		t.Errorf("``` body = %q, %q", body, ctype)
+	}
+}

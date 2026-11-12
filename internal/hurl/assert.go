@@ -6,6 +6,7 @@ import (
 	"math/big"
 	"net/netip"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -268,19 +269,13 @@ func (a *Assert) want(look Lookup) (any, error) {
 }
 
 // check reports whether got satisfies the assert. got is none{} when the
-// query selected nothing.
+// query selected nothing: then, as in hurl, every predicate fails and
+// every negated one passes.
 func (a *Assert) check(got, want any) bool {
-	if a.Pred == "exists" {
-		_, missing := got.(none)
-		if l, ok := got.([]any); ok && !a.Path.definite {
-			missing = len(l) == 0
-		}
-		return missing == a.Not
-	}
 	if _, ok := got.(none); ok {
-		return false // only exists can pass on nothing, even with not
+		return a.Not
 	}
-	return test(a.Pred, got, want) != a.Not
+	return (a.Pred == "exists" || test(a.Pred, got, want)) != a.Not
 }
 
 func test(pred string, got, want any) bool {
@@ -292,23 +287,22 @@ func test(pred string, got, want any) bool {
 	case ">", ">=", "<", "<=":
 		c, ok := compare(got, want)
 		return ok && map[string]bool{">": c > 0, ">=": c >= 0, "<": c < 0, "<=": c <= 0}[pred]
-	case "startsWith", "endsWith", "contains":
+	case "contains", "includes": // hurl deprecates includes for contains
+		if l, ok := got.([]any); ok {
+			return slices.ContainsFunc(l, func(x any) bool { return equal(x, want) })
+		}
+		g, ok1 := got.(string)
+		w, ok2 := want.(string)
+		return pred == "contains" && ok1 && ok2 && strings.Contains(g, w)
+	case "startsWith", "endsWith":
 		g, ok1 := got.(string)
 		w, ok2 := want.(string)
 		if !ok1 || !ok2 {
 			return false
 		}
 		return map[string]func(string, string) bool{
-			"startsWith": strings.HasPrefix, "endsWith": strings.HasSuffix, "contains": strings.Contains,
+			"startsWith": strings.HasPrefix, "endsWith": strings.HasSuffix,
 		}[pred](g, w)
-	case "includes":
-		l, _ := got.([]any)
-		for _, x := range l {
-			if equal(x, want) {
-				return true
-			}
-		}
-		return false
 	case "matches":
 		g, ok := got.(string)
 		return ok && want.(*regexp.Regexp).MatchString(g)

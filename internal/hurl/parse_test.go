@@ -47,7 +47,7 @@ func TestParse(t *testing.T) {
 	if len(e.Query) != 1 || e.Query[0] != (Pair{5, "dry", "false"}) {
 		t.Errorf("query = %v", e.Query)
 	}
-	if e.Body == nil || !e.Body.JSON || e.Body.Line != 6 || !strings.HasSuffix(e.Body.Text, "}\n") {
+	if e.Body == nil || !e.Body.JSON || e.Body.Line != 6 || !strings.HasSuffix(e.Body.Text, "\n}") {
 		t.Errorf("body = %+v", e.Body)
 	}
 	r := e.Response
@@ -85,7 +85,7 @@ func TestParseErrors(t *testing.T) {
 
 func TestParseJSONArrayIsNotASection(t *testing.T) {
 	es, err := Parse("POST http://x\n[true]\n")
-	if err != nil || es[0].Body == nil || es[0].Body.Text != "[true]\n" {
+	if err != nil || es[0].Body == nil || es[0].Body.Text != "[true]" {
 		t.Fatalf("got %+v, %v", es, err)
 	}
 }

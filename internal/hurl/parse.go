@@ -51,7 +51,7 @@ type Pair struct {
 // Body is a request body as written.
 type Body struct {
 	Line int
-	JSON bool // written as a JSON object or array, not a text block
+	JSON bool // a JSON object or array, or a ```json block: sent as application/json
 	Text string
 }
 
@@ -259,7 +259,7 @@ func (p *parser) body() (*Body, error) {
 		for ; !p.done(); p.i++ {
 			if p.cur() == "```" {
 				p.i++
-				return &Body{Line: start, Text: text.String()}, nil
+				return &Body{Line: start, JSON: lang == "json", Text: text.String()}, nil
 			}
 			text.WriteString(p.lines[p.i])
 			text.WriteByte('\n')
@@ -306,7 +306,8 @@ func (p *parser) json() (*Body, error) {
 		}
 		if depth == 0 && !inStr {
 			p.i++
-			return &Body{Line: start, JSON: true, Text: text.String()}, nil
+			// The body ends at its closing bracket, as in hurl.
+			return &Body{Line: start, JSON: true, Text: strings.TrimRight(text.String(), " \t\n")}, nil
 		}
 	}
 	return nil, parseErr(start, "unterminated JSON body")
