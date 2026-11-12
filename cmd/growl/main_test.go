@@ -88,3 +88,50 @@ func TestReportsEveryFailure(t *testing.T) {
 		t.Errorf("code %d, stderr:\n%s", code, errOut.String())
 	}
 }
+
+func TestToAndCaptures(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		io.WriteString(w, `{"id": 42, "token": "tok-abcdef"}`)
+	}))
+	defer srv.Close()
+	src := `POST {{base}}/login
+HTTP 200
+[Captures]
+id: jsonpath "$.id"
+token: jsonpath "$.token" redact
+
+GET {{base}}/orders/{{id}}
+Authorization: {{token}}
+
+GET {{base}}/last
+`
+	getenv := func(k string) (string, bool) { return srv.URL, k == "base" }
+	call := func(args ...string) (int, string, string) {
+		paths = nil
+		var out, errOut strings.Builder
+		code := run(context.Background(), append(args, "a.hurl"), strings.NewReader(src), &out, &errOut, getenv, nil)
+		return code, out.String(), errOut.String()
+	}
+
+	// -to on the second request runs the first two; the captured token is
+	// hidden everywhere, including in the response that carried it.
+	code, out, errOut := call("-stdin", "-to", "8")
+	if code != 0 || strings.Join(paths, " ") != "/login /orders/42" {
+		t.Errorf("-to: code %d, paths %v, err %s", code, paths, errOut)
+	}
+	if strings.Contains(out, "tok-abcdef") || !strings.Contains(out, `"token": "***"`) {
+		t.Errorf("-to: token not hidden:\n%s", out)
+	}
+	// -line on the second request alone can't see the capture, and says
+	// where it comes from.
+	code, _, errOut = call("-stdin", "-line", "7")
+	want := "a.hurl:7: undefined variable id (captured by the request at line 1; run up to here with -to)\n"
+	if code != 3 || errOut != want || len(paths) != 0 {
+		t.Errorf("-line: code %d, paths %v, err %q", code, paths, errOut)
+	}
+	if code, _, _ = call("-stdin", "-line", "7", "-to", "7"); code != 1 {
+		t.Errorf("-line with -to: code %d, want 1", code)
+	}
+}

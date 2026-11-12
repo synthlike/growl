@@ -6,7 +6,7 @@ JSON asserts and captures, built to run one request at a time from an editor
 
 ## Layout
 
-- `cmd/growl`: entry point (`growl [-line n] [-stdin] [-i] file.hurl`).
+- `cmd/growl`: entry point (`growl [-line n | -to n] [-stdin] [-i] file.hurl`).
 - `internal/hurl`: parser (with line numbers), templates, JSONPath, asserts, runner.
 - `compat`: runs `testdata` cases through real hurl and growl and fails where
   they disagree; skipped when hurl isn't installed.

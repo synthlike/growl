@@ -23,9 +23,11 @@ func main() {
 	os.Exit(code)
 }
 
-const usage = `usage: growl [-line n] [-stdin] [-i] [-timeout d] file.hurl
+const usage = `usage: growl [-line n | -to n] [-stdin] [-i] [-timeout d] file.hurl
 
-Runs the requests in a Hurl file in order, or only the one at -line.
+Runs the requests in a Hurl file in order: all of them, only the one at
+-line, or the ones up to and including it with -to. Captures carry over
+to later requests.
 {{name}} reads GROWL_VARIABLE_name, then HURL_VARIABLE_name, then name
 from the environment.
 Exit codes: 1 usage, 2 parse, 3 runtime, 4 assert.
@@ -38,13 +40,14 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	fs.SetOutput(stderr)
 	fs.Usage = func() { io.WriteString(stderr, usage); fs.PrintDefaults() }
 	line := fs.Int("line", 0, "run only the request at this 1-based line")
+	to := fs.Int("to", 0, "run the requests up to and including the one at this line")
 	fromStdin := fs.Bool("stdin", false, "read the file's text from stdin; the file argument only names it")
 	headers := fs.Bool("i", false, "print response headers")
 	timeout := fs.Duration("timeout", 0, "per-request timeout, such as 30s (default none)")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
-	if fs.NArg() != 1 {
+	if fs.NArg() != 1 || *line > 0 && *to > 0 {
 		fs.Usage()
 		return 1
 	}
@@ -62,8 +65,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return 1
 	}
 
-	out := &redactor{w: stdout, secrets: secrets(environ)}
-	errOut := &redactor{w: stderr, secrets: out.secrets}
+	hidden := &secrets{vs: envSecrets(environ)}
+	out := &redactor{w: stdout, s: hidden}
+	errOut := &redactor{w: stderr, s: hidden}
 	report := func(err error) int {
 		errs := []error{err}
 		if j, ok := err.(interface{ Unwrap() []error }); ok {
@@ -91,15 +95,29 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		fmt.Fprintf(errOut, "%s: no requests\n", name)
 		return hurl.ExitParse
 	}
-	if *line > 0 {
+	var capturedAt map[string]int
+	switch {
+	case *line > 0:
 		k := hurl.Pick(es, *line)
+		capturedAt = map[string]int{}
+		for _, e := range es[:k] {
+			if e.Response != nil {
+				for _, c := range e.Response.Captures {
+					capturedAt[c.Name] = e.Line
+				}
+			}
+		}
 		es = es[k : k+1]
+	case *to > 0:
+		es = es[:hurl.Pick(es, *to)+1]
 	}
 
 	r := &hurl.Runner{
-		Client:  hurl.NewClient(*timeout),
-		Out:     out,
-		Headers: *headers,
+		Client:     hurl.NewClient(*timeout),
+		Out:        out,
+		Headers:    *headers,
+		CapturedAt: capturedAt,
+		OnSecret:   func(s string) { hidden.vs = append(hidden.vs, s) },
 		Lookup: func(v string) (string, bool) {
 			for _, k := range []string{"GROWL_VARIABLE_" + v, "HURL_VARIABLE_" + v, v} {
 				if s, ok := getenv(k); ok {
@@ -122,9 +140,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 
 var secretRe = regexp.MustCompile(`(?i)token|secret|passw|api_?key|private|credential`)
 
-// secrets returns the values of environment variables whose names look
+// envSecrets returns the values of environment variables whose names look
 // secret, so output can hide them.
-func secrets(environ []string) []string {
+func envSecrets(environ []string) []string {
 	var vs []string
 	for _, kv := range environ {
 		k, v, _ := strings.Cut(kv, "=")
@@ -135,16 +153,19 @@ func secrets(environ []string) []string {
 	return vs
 }
 
+// secrets are values to hide; redacted captures add to them as a file runs.
+type secrets struct{ vs []string }
+
 // redactor replaces secret values with *** in what it writes. Callers write
 // whole lines or bodies, so a secret isn't split across writes.
 type redactor struct {
-	w       io.Writer
-	secrets []string
+	w io.Writer
+	s *secrets
 }
 
 func (r *redactor) Write(p []byte) (int, error) {
 	s := string(p)
-	for _, v := range r.secrets {
+	for _, v := range r.s.vs {
 		s = strings.ReplaceAll(s, v, "***")
 	}
 	if _, err := io.WriteString(r.w, s); err != nil {
