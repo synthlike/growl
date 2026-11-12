@@ -9,16 +9,23 @@ POST {{API_URL}}/orders
 Authorization: Bearer {{API_TOKEN}}
 {"sku": "demo-widget", "quantity": 1}
 HTTP 201
-Location: /orders/1
+[Captures]
+order_id: jsonpath "$.id"
 [Asserts]
 jsonpath "$.quantity" == 1
-jsonpath "$.items" count > 0
+
+GET {{API_URL}}/orders/{{order_id}}
+Authorization: Bearer {{API_TOKEN}}
+HTTP 200
+[Asserts]
+jsonpath "$.status" == "pending"
 ```
 
 ```sh
 go install github.com/synthlike/growl/cmd/growl@latest
 growl orders.hurl            # every request, in order
 growl -line 3 orders.hurl    # only the request around line 3
+growl -to 9 orders.hurl      # the requests up to the one around line 9
 ```
 
 Every growl file is meant to run unchanged under real hurl.
@@ -30,7 +37,7 @@ Every growl file is meant to run unchanged under real hurl.
   JSON and ```` ```json ```` bodies get `Content-Type: application/json`
   unless you set one.
 - Responses: `HTTP 200`, `HTTP/2 200`, `HTTP *`, header lines under it
-  (which must match), and `[Asserts]`.
+  (which must match), `[Captures]` and `[Asserts]`.
 - Asserts: the queries `status`, `header "Name"`, `jsonpath "$.path"`, `body`
   and `duration` (ms); the `count` filter; `not`; the predicates `==` `!=`
   `>` `>=` `<` `<=` `startsWith` `endsWith` `contains` `matches`
@@ -41,6 +48,13 @@ Every growl file is meant to run unchanged under real hurl.
   lists only). As in hurl, a header with several values is a list, a query
   that selects nothing is none, where every predicate fails and every `not`
   one passes, and `count` takes lists only.
+- Captures: `name: query [count] [redact]`, with the same queries as asserts.
+  Later requests, and the request's own asserts, use them as `{{name}}`; a
+  capture replaces a variable of the same name. A capture that selects
+  nothing is an error. Numbers render as hurl renders them (`9.50` as `9.5`,
+  `1e3` as `1000.0`); lists and objects can't be rendered. Unquoted in an
+  assert, `{{name}}` keeps the captured type, so the string `"7"` doesn't
+  equal `7`. `redact` hides the value in growl's output.
 - JSONPath: `$`, `.name`, `['name']`, `[0]`, `[-1]`, `.*`, `[*]`, `..name`.
   No filters, slices or unions.
 - Templates: `{{name}}` reads `GROWL_VARIABLE_name`, then `HURL_VARIABLE_name`,
@@ -50,14 +64,18 @@ Every growl file is meant to run unchanged under real hurl.
 - Redirects aren't followed, as in hurl.
 
 Anything else in the Hurl format is an error that names the feature and its
-line. growl never ignores it. `[Captures]` come next.
+line. growl never ignores it.
 
 ## Output
 
 Each request prints its line, the status with timing, and the body (JSON
 indented). `-i` adds response headers. Values of environment variables whose
-names look secret (`*TOKEN*`, `*SECRET*`, `*PASSW*`, `*API_KEY*`, …) show as
-`***`.
+names look secret (`*TOKEN*`, `*SECRET*`, `*PASSW*`, `*API_KEY*`, …), and
+values captured with `redact`, show as `***`.
+
+`-line` runs one request alone, so it can't use captures from earlier ones;
+the error names the request that captures the variable. `-to` runs them all
+up to there.
 
 Problems print as `file:line: message`, with every failing assert of a
 request on its own line. Exit codes follow hurl: 1 usage, 2 parse, 3 runtime,
