@@ -74,3 +74,17 @@ func TestVariablePrecedence(t *testing.T) {
 		}
 	}
 }
+
+func TestReportsEveryFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"id": 1}`)
+	}))
+	defer srv.Close()
+	src := "GET " + srv.URL + "\nHTTP 200\n[Asserts]\njsonpath \"$.id\" == 2\njsonpath \"$.name\" exists\n"
+	var errOut strings.Builder
+	code := run(context.Background(), []string{"-stdin", "a.hurl"}, strings.NewReader(src), io.Discard, &errOut, func(string) (string, bool) { return "", false }, nil)
+	want := "a.hurl:4: jsonpath \"$.id\" == 2: got 1\na.hurl:5: jsonpath \"$.name\" exists: got none\n"
+	if code != 4 || errOut.String() != want {
+		t.Errorf("code %d, stderr:\n%s", code, errOut.String())
+	}
+}

@@ -65,12 +65,22 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	out := &redactor{w: stdout, secrets: secrets(environ)}
 	errOut := &redactor{w: stderr, secrets: out.secrets}
 	report := func(err error) int {
-		if e, ok := errors.AsType[*hurl.Error](err); ok {
-			fmt.Fprintf(errOut, "%s:%d: %s\n", name, e.Line, e.Msg)
-			return e.Code
+		errs := []error{err}
+		if j, ok := err.(interface{ Unwrap() []error }); ok {
+			errs = j.Unwrap()
 		}
-		fmt.Fprintf(errOut, "%s: %v\n", name, err)
-		return hurl.ExitRuntime
+		code := 0
+		for _, err := range errs {
+			c := hurl.ExitRuntime
+			if e, ok := errors.AsType[*hurl.Error](err); ok {
+				fmt.Fprintf(errOut, "%s:%d: %s\n", name, e.Line, e.Msg)
+				c = e.Code
+			} else {
+				fmt.Fprintf(errOut, "%s: %v\n", name, err)
+			}
+			code = max(code, c)
+		}
+		return code
 	}
 
 	es, err := hurl.Parse(string(src))

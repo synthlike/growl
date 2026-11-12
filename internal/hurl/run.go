@@ -5,12 +5,14 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -52,7 +54,8 @@ func (r *Runner) Run(ctx context.Context, e Entry) error {
 	if err != nil {
 		return &Error{Line: e.Line, Msg: "reading the response: " + err.Error(), Code: ExitRuntime}
 	}
-	fmt.Fprintf(r.Out, "%s %s  %s\n", resp.Proto, resp.Status, time.Since(start).Round(time.Millisecond))
+	dur := time.Since(start)
+	fmt.Fprintf(r.Out, "%s %s  %s\n", resp.Proto, resp.Status, dur.Round(time.Millisecond))
 	if r.Headers {
 		for _, k := range slices.Sorted(maps.Keys(resp.Header)) {
 			for _, v := range resp.Header[k] {
@@ -64,7 +67,7 @@ func (r *Runner) Run(ctx context.Context, e Entry) error {
 	if e.Response == nil {
 		return nil
 	}
-	return r.check(e.Response, resp)
+	return r.check(e.Response, resp, data, dur)
 }
 
 func (r *Runner) request(ctx context.Context, e Entry) (*http.Request, error) {
@@ -117,39 +120,6 @@ func (r *Runner) request(ctx context.Context, e Entry) (*http.Request, error) {
 	return req, nil
 }
 
-// check compares a response with what the entry expects.
-func (r *Runner) check(want *Response, resp *http.Response) error {
-	fail := func(line int, format string, args ...any) error {
-		return &Error{Line: line, Msg: fmt.Sprintf(format, args...), Code: ExitAssert}
-	}
-	if want.Version != "" {
-		got := strings.TrimSuffix(strings.TrimPrefix(resp.Proto, "HTTP/"), ".0")
-		if want.Version == "1.0" && got == "1" {
-			got = "1.0"
-		}
-		if got != want.Version {
-			return fail(want.Line, "HTTP/%s: got %s", want.Version, resp.Proto)
-		}
-	}
-	if want.Status != 0 && resp.StatusCode != want.Status {
-		return fail(want.Line, "HTTP %d: got %d", want.Status, resp.StatusCode)
-	}
-	for _, h := range want.Headers {
-		v, err := expand(h.Value, h.Line, r.Lookup)
-		if err != nil {
-			return err
-		}
-		got := resp.Header.Values(h.Name)
-		if !slices.Contains(got, v) {
-			if len(got) == 0 {
-				return fail(h.Line, "header %s: want %q, got none", h.Name, v)
-			}
-			return fail(h.Line, "header %s: want %q, got %q", h.Name, v, strings.Join(got, ", "))
-		}
-	}
-	return nil
-}
-
 // printBody writes JSON indented, text as is and binary as a size.
 func printBody(w io.Writer, ctype string, data []byte) {
 	if len(data) == 0 {
@@ -169,4 +139,127 @@ func printBody(w io.Writer, ctype string, data []byte) {
 	if data[len(data)-1] != '\n' {
 		io.WriteString(w, "\n")
 	}
+}
+
+// check compares a response with what the entry expects: version, status,
+// implicit headers, then [Asserts]. It reports every failure, joined.
+func (r *Runner) check(want *Response, resp *http.Response, data []byte, dur time.Duration) error {
+	var errs []error
+	fail := func(line int, format string, args ...any) {
+		errs = append(errs, &Error{Line: line, Msg: fmt.Sprintf(format, args...), Code: ExitAssert})
+	}
+	if want.Version != "" {
+		got := strings.TrimSuffix(strings.TrimPrefix(resp.Proto, "HTTP/"), ".0")
+		if want.Version == "1.0" && got == "1" {
+			got = "1.0"
+		}
+		if got != want.Version {
+			fail(want.Line, "HTTP/%s: got %s", want.Version, resp.Proto)
+		}
+	}
+	if want.Status != 0 && resp.StatusCode != want.Status {
+		fail(want.Line, "HTTP %d: got %d", want.Status, resp.StatusCode)
+	}
+	for _, h := range want.Headers {
+		v, err := expand(h.Value, h.Line, r.Lookup)
+		if err != nil {
+			return err
+		}
+		got := resp.Header.Values(h.Name)
+		if !slices.Contains(got, v) {
+			if len(got) == 0 {
+				fail(h.Line, "header %s: want %q, got none", h.Name, v)
+			} else {
+				fail(h.Line, "header %s: want %q, got %q", h.Name, v, strings.Join(got, ", "))
+			}
+		}
+	}
+
+	var doc any
+	var docErr error
+	decoded := false
+	for _, a := range want.Asserts {
+		var w any
+		if a.Want != nil {
+			var err error
+			if w, err = a.want(r.Lookup); err != nil {
+				return err
+			}
+		}
+		var got []any // a header can have several values; any may pass
+		switch a.Query {
+		case "status":
+			got = []any{json.Number(strconv.Itoa(resp.StatusCode))}
+		case "duration":
+			got = []any{json.Number(strconv.FormatInt(dur.Milliseconds(), 10))}
+		case "body":
+			got = []any{string(data)}
+		case "header":
+			for _, v := range resp.Header.Values(a.Arg) {
+				got = append(got, v)
+			}
+		case "jsonpath":
+			if !decoded {
+				doc, docErr = decodeJSON(data)
+				decoded = true
+			}
+			if docErr != nil {
+				fail(a.Line, "%s: the body is not JSON: %v", a.Text, docErr)
+				continue
+			}
+			nodes := a.Path.eval(doc)
+			switch {
+			case !a.Path.definite:
+				got = []any{nodes}
+			case len(nodes) == 1:
+				got = []any{nodes[0]}
+			}
+		}
+		if len(got) == 0 {
+			got = []any{none{}}
+		}
+		if a.Count {
+			for i, g := range got {
+				switch v := g.(type) {
+				case []any:
+					got[i] = json.Number(strconv.Itoa(len(v)))
+				case map[string]any:
+					got[i] = json.Number(strconv.Itoa(len(v)))
+				case none:
+				default:
+					fail(a.Line, "%s: count needs a list or object, got %s", a.Text, show(v))
+					got = nil
+				}
+			}
+			if got == nil {
+				continue
+			}
+		}
+		ok := slices.ContainsFunc(got, func(g any) bool { return a.check(g, w) })
+		if a.Not && len(got) > 1 { // not: no value may pass the positive test
+			ok = !slices.ContainsFunc(got, func(g any) bool { return !a.check(g, w) })
+		}
+		if !ok {
+			shown := make([]string, len(got))
+			for i, g := range got {
+				shown[i] = show(g)
+			}
+			fail(a.Line, "%s: got %s", a.Text, strings.Join(shown, ", "))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// decodeJSON decodes a whole body, keeping numbers exact.
+func decodeJSON(data []byte) (any, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return nil, err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, fmt.Errorf("data after the JSON value")
+	}
+	return v, nil
 }

@@ -66,7 +66,8 @@ func TestParseErrors(t *testing.T) {
 	for _, tc := range []struct{ src, want string }{
 		{"hello", `1: want a request line like GET https://example.com, got "hello"`},
 		{"GET http://x\n[Options]\nverbose: true", "2: [Options] is not supported"},
-		{"GET http://x\nHTTP 200\n[Asserts]\nstatus == 200", "3: [Asserts] is not supported yet"},
+		{"GET http://x\nHTTP 200\n[Captures]\nid: jsonpath \"$.id\"", "3: [Captures] is not supported yet"},
+		{"GET http://x\nHTTP 200\n[Query]", "3: [Query] belongs to the request, before the HTTP line"},
 		{"GET http://x\n[Captures]", "2: [Captures] goes after the HTTP line"},
 		{"POST http://x\n{\n\"a\": 1", "2: unterminated JSON body"},
 		{"POST http://x\n<a/>", "2: XML bodies are not supported"},

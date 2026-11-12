@@ -1,6 +1,6 @@
 // Package hurl parses and runs a small subset of the Hurl file format
 // (https://hurl.dev): requests with headers, [Query] and JSON or text bodies,
-// and the HTTP status line with implicit header asserts. Anything else in the
+// and the HTTP status line with implicit header asserts and [Asserts]. Anything else in the
 // format is rejected with an error naming it, never ignored.
 package hurl
 
@@ -61,6 +61,7 @@ type Response struct {
 	Version string // "" for any, else "1.0", "1.1", "2" or "3"
 	Status  int    // 0 for *
 	Headers []Pair // implicit asserts: the header must have this value
+	Asserts []Assert
 }
 
 var (
@@ -182,10 +183,10 @@ func (p *parser) entry() (Entry, error) {
 			p.i++
 			r.Headers = p.headers()
 			e.Response = r
+			if err := p.responseSections(r); err != nil {
+				return e, err
+			}
 			if p.skip(); !p.done() {
-				if name, ok := p.section(); ok {
-					return e, parseErr(p.num(), "[%s] is not supported yet", name)
-				}
 				if p.bodyStart() {
 					return e, parseErr(p.num(), "response body asserts are not supported yet")
 				}
@@ -309,4 +310,34 @@ func (p *parser) json() (*Body, error) {
 		}
 	}
 	return nil, parseErr(start, "unterminated JSON body")
+}
+
+// responseSections reads the sections after the HTTP line.
+func (p *parser) responseSections(r *Response) error {
+	for p.skip(); !p.done(); p.skip() {
+		name, ok := p.section()
+		if !ok {
+			return nil
+		}
+		switch name {
+		case "Asserts":
+		case "Captures":
+			return parseErr(p.num(), "[Captures] is not supported yet")
+		default:
+			return parseErr(p.num(), "[%s] belongs to the request, before the HTTP line", name)
+		}
+		p.i++
+		for p.skip(); !p.done(); p.skip() {
+			if _, ok := p.section(); ok || methodRe.MatchString(p.cur()) || p.bodyStart() {
+				break
+			}
+			a, err := parseAssert(p.cur(), p.num())
+			if err != nil {
+				return err
+			}
+			r.Asserts = append(r.Asserts, a)
+			p.i++
+		}
+	}
+	return nil
 }
