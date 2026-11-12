@@ -12,7 +12,7 @@ JSON asserts and captures, built to run one request at a time from an editor
 ## Rules
 
 - Stay a strict subset of Hurl: a file growl accepts must mean the same thing
-  to real hurl, except for the documented plain-env variable fallback.
+  to real hurl, except for the documented GROWL_VARIABLE_ and plain-env variable fallbacks.
   Unsupported Hurl features fail with an error naming the feature and line;
   never ignore them.
 - Standard library only. Ask before adding a dependency.

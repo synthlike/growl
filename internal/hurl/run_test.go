@@ -60,7 +60,7 @@ func TestRunAsserts(t *testing.T) {
 		{"GET " + srv.URL + "\nHTTP 200", "2: HTTP 200: got 404"},
 		{"GET " + srv.URL + "\nHTTP 404\nX-A: 2", `3: header X-A: want "2", got "1"`},
 		{"GET " + srv.URL + "\nHTTP 404\nX-B: 2", `3: header X-B: want "2", got none`},
-		{"GET {{nope}}/x", "1: undefined variable nope (set HURL_VARIABLE_nope or nope)"},
+		{"GET {{nope}}/x", "1: undefined variable nope (set GROWL_VARIABLE_nope, HURL_VARIABLE_nope or nope)"},
 	} {
 		es, err := Parse(tc.src)
 		if err != nil {

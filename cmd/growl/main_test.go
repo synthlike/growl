@@ -48,3 +48,29 @@ func TestRun(t *testing.T) {
 		t.Errorf("no args: code %d", code)
 	}
 }
+
+func TestVariablePrecedence(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, r.URL.Path+"\n")
+	}))
+	defer srv.Close()
+	for _, env := range []map[string]string{
+		{"GROWL_VARIABLE_p": "growl", "HURL_VARIABLE_p": "hurl", "p": "plain"},
+		{"HURL_VARIABLE_p": "hurl", "p": "plain"},
+		{"p": "plain"},
+	} {
+		getenv := func(k string) (string, bool) {
+			if k == "base" {
+				return srv.URL, true
+			}
+			v, ok := env[k]
+			return v, ok
+		}
+		var out strings.Builder
+		code := run(context.Background(), []string{"-stdin", "x.hurl"}, strings.NewReader("GET {{base}}/{{p}}\n"), &out, io.Discard, getenv, nil)
+		want := "/" + map[int]string{3: "growl", 2: "hurl", 1: "plain"}[len(env)] + "\n"
+		if code != 0 || !strings.HasSuffix(out.String(), want) {
+			t.Errorf("env %v: code %d, output %q, want suffix %q", env, code, out.String(), want)
+		}
+	}
+}

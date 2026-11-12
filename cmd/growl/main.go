@@ -26,7 +26,8 @@ func main() {
 const usage = `usage: growl [-line n] [-stdin] [-i] [-timeout d] file.hurl
 
 Runs the requests in a Hurl file in order, or only the one at -line.
-{{name}} reads HURL_VARIABLE_name, then name, from the environment.
+{{name}} reads GROWL_VARIABLE_name, then HURL_VARIABLE_name, then name
+from the environment.
 Exit codes: 1 usage, 2 parse, 3 runtime, 4 assert.
 
 `
@@ -90,10 +91,12 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		Out:     out,
 		Headers: *headers,
 		Lookup: func(v string) (string, bool) {
-			if s, ok := getenv("HURL_VARIABLE_" + v); ok {
-				return s, true
+			for _, k := range []string{"GROWL_VARIABLE_" + v, "HURL_VARIABLE_" + v, v} {
+				if s, ok := getenv(k); ok {
+					return s, true
+				}
 			}
-			return getenv(v)
+			return "", false
 		},
 	}
 	for i, e := range es {

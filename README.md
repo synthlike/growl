@@ -27,8 +27,8 @@ Every growl file is meant to run unchanged under real hurl.
   `Content-Type: application/json` unless you set one.
 - Responses: `HTTP 200`, `HTTP/2 200`, `HTTP *`, and header lines under it,
   which must match.
-- Templates: `{{name}}` reads `HURL_VARIABLE_name`, then `name`, from the
-  environment (real hurl only reads the first). `{{newUuid}}` and `{{newDate}}`
+- Templates: `{{name}}` reads `GROWL_VARIABLE_name`, then `HURL_VARIABLE_name`,
+  then `name` from the environment. Real hurl reads only `HURL_VARIABLE_name`. `{{newUuid}}` and `{{newDate}}`
   are built in. An undefined variable is an error, never an empty string.
 - Redirects aren't followed, as in hurl.
 

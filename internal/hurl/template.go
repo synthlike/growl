@@ -34,7 +34,7 @@ func expand(s string, line int, look Lookup) (string, error) {
 	})
 	if len(missing) > 0 {
 		return "", &Error{Line: line, Code: ExitRuntime,
-			Msg: fmt.Sprintf("undefined variable %s (set HURL_VARIABLE_%s or %s)", strings.Join(missing, ", "), missing[0], missing[0])}
+			Msg: fmt.Sprintf("undefined variable %s (set GROWL_VARIABLE_%[2]s, HURL_VARIABLE_%[2]s or %[2]s)", strings.Join(missing, ", "), missing[0])}
 	}
 	return out, nil
 }
