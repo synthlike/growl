@@ -18,12 +18,22 @@ import (
 	"unicode/utf8"
 )
 
-// Runner sends entries and checks their responses.
+// Runner sends entries and checks their responses. Values captured by one
+// entry are available to the entries it runs after it.
 type Runner struct {
 	Client  *http.Client // should not follow redirects, like hurl
-	Lookup  Lookup
+	Lookup  Lookup       // environment variables
 	Out     io.Writer
 	Headers bool // print response headers
+
+	// CapturedAt maps names captured by entries that won't run to the
+	// line of the entry, for the undefined-variable hint.
+	CapturedAt map[string]int
+	// OnSecret receives each value captured with redact, before it can be
+	// printed, so output can hide it.
+	OnSecret func(string)
+
+	captures map[string]any
 }
 
 // NewClient returns a client that, like hurl by default, doesn't follow
@@ -37,7 +47,26 @@ func NewClient(timeout time.Duration) *http.Client {
 	}
 }
 
-// Run sends e, prints the response, and checks it against e.Response.
+// value finds a template variable: a capture first, as captures override
+// variables in hurl, then the environment.
+func (r *Runner) value(name string) (any, bool) {
+	if v, ok := r.captures[name]; ok {
+		return v, true
+	}
+	if s, ok := r.Lookup(name); ok {
+		return envString(s), true
+	}
+	return nil, false
+}
+
+func (r *Runner) hint(name string) string {
+	if line, ok := r.CapturedAt[name]; ok {
+		return fmt.Sprintf("captured by the request at line %d; run up to here with -to", line)
+	}
+	return fmt.Sprintf("set GROWL_VARIABLE_%[1]s, HURL_VARIABLE_%[1]s or %[1]s", name)
+}
+
+// Run sends e, prints the response, takes its captures and checks it.
 func (r *Runner) Run(ctx context.Context, e Entry) error {
 	req, err := r.request(ctx, e)
 	if err != nil {
@@ -45,33 +74,52 @@ func (r *Runner) Run(ctx context.Context, e Entry) error {
 	}
 	fmt.Fprintf(r.Out, "%s %s\n", req.Method, req.URL)
 	start := time.Now()
-	resp, err := r.Client.Do(req)
+	hr, err := r.Client.Do(req)
 	if err != nil {
 		return &Error{Line: e.Line, Msg: err.Error(), Code: ExitRuntime}
 	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+	defer hr.Body.Close()
+	data, err := io.ReadAll(hr.Body)
 	if err != nil {
 		return &Error{Line: e.Line, Msg: "reading the response: " + err.Error(), Code: ExitRuntime}
 	}
-	dur := time.Since(start)
-	fmt.Fprintf(r.Out, "%s %s  %s\n", resp.Proto, resp.Status, dur.Round(time.Millisecond))
+	resp := &response{Response: hr, data: data, dur: time.Since(start)}
+
+	// Captures come first: redacted values must be hidden before the body
+	// is printed, and asserts may use them.
+	var captured map[string]any
+	var capErr error
+	if e.Response != nil {
+		captured, capErr = r.capture(e.Response.Captures, resp)
+	}
+
+	fmt.Fprintf(r.Out, "%s %s  %s\n", hr.Proto, hr.Status, resp.dur.Round(time.Millisecond))
 	if r.Headers {
-		for _, k := range slices.Sorted(maps.Keys(resp.Header)) {
-			for _, v := range resp.Header[k] {
+		for _, k := range slices.Sorted(maps.Keys(hr.Header)) {
+			for _, v := range hr.Header[k] {
 				fmt.Fprintf(r.Out, "%s: %s\n", k, v)
 			}
 		}
 	}
-	printBody(r.Out, resp.Header.Get("Content-Type"), data)
+	printBody(r.Out, hr.Header.Get("Content-Type"), data)
 	if e.Response == nil {
 		return nil
 	}
-	return r.check(e.Response, resp, data, dur)
+	if err := r.implicit(e.Response, hr); err != nil {
+		return err
+	}
+	if capErr != nil {
+		return capErr
+	}
+	if r.captures == nil {
+		r.captures = map[string]any{}
+	}
+	maps.Copy(r.captures, captured)
+	return r.asserts(e.Response.Asserts, resp)
 }
 
 func (r *Runner) request(ctx context.Context, e Entry) (*http.Request, error) {
-	u, err := expand(e.URL, e.Line, r.Lookup)
+	u, err := expand(e.URL, e.Line, r)
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +134,7 @@ func (r *Runner) request(ctx context.Context, e Entry) (*http.Request, error) {
 			q = append(q, pu.RawQuery)
 		}
 		for _, p := range e.Query {
-			v, err := expand(p.Value, p.Line, r.Lookup)
+			v, err := expand(p.Value, p.Line, r)
 			if err != nil {
 				return nil, err
 			}
@@ -97,7 +145,7 @@ func (r *Runner) request(ctx context.Context, e Entry) (*http.Request, error) {
 	}
 	var body io.Reader
 	if e.Body != nil {
-		text, err := expand(e.Body.Text, e.Body.Line, r.Lookup)
+		text, err := expand(e.Body.Text, e.Body.Line, r)
 		if err != nil {
 			return nil, err
 		}
@@ -108,7 +156,7 @@ func (r *Runner) request(ctx context.Context, e Entry) (*http.Request, error) {
 		return nil, &Error{Line: e.Line, Msg: err.Error(), Code: ExitRuntime}
 	}
 	for _, h := range e.Headers {
-		v, err := expand(h.Value, h.Line, r.Lookup)
+		v, err := expand(h.Value, h.Line, r)
 		if err != nil {
 			return nil, err
 		}
@@ -145,9 +193,91 @@ func printBody(w io.Writer, ctype string, data []byte) {
 	}
 }
 
-// check compares a response with what the entry expects: version, status,
-// implicit headers, then [Asserts]. It reports every failure, joined.
-func (r *Runner) check(want *Response, resp *http.Response, data []byte, dur time.Duration) error {
+// response is a received response that queries read from.
+type response struct {
+	*http.Response
+	data    []byte
+	dur     time.Duration
+	doc     any
+	docErr  error
+	decoded bool
+}
+
+// query returns what q selects, none{} for nothing, or a reason it can't.
+func (x *response) query(q Query) (any, string) {
+	var got any = none{}
+	switch q.Kind {
+	case "status":
+		got = json.Number(strconv.Itoa(x.StatusCode))
+	case "duration":
+		got = json.Number(strconv.FormatInt(x.dur.Milliseconds(), 10))
+	case "body":
+		got = string(x.data)
+	case "header": // several values make a list, as in hurl
+		switch vs := x.Header.Values(q.Arg); len(vs) {
+		case 0:
+		case 1:
+			got = vs[0]
+		default:
+			l := make([]any, len(vs))
+			for i, v := range vs {
+				l[i] = v
+			}
+			got = l
+		}
+	case "jsonpath":
+		if !x.decoded {
+			x.doc, x.docErr = decodeJSON(x.data)
+			x.decoded = true
+		}
+		if x.docErr != nil {
+			return nil, "the body is not JSON: " + x.docErr.Error()
+		}
+		// Selecting nothing is none, even for a wildcard, as in hurl.
+		switch nodes := q.Path.eval(x.doc); {
+		case len(nodes) == 0:
+		case q.Path.definite:
+			got = nodes[0]
+		default:
+			got = nodes
+		}
+	}
+	if q.Count {
+		l, ok := got.([]any)
+		if !ok {
+			return nil, "count needs a list, got " + show(got)
+		}
+		got = json.Number(strconv.Itoa(len(l)))
+	}
+	return got, ""
+}
+
+// capture evaluates an entry's captures against its response.
+func (r *Runner) capture(cs []Capture, resp *response) (map[string]any, error) {
+	out := map[string]any{}
+	for _, c := range cs {
+		v, why := resp.query(c.Query)
+		if why == "" {
+			if _, ok := v.(none); ok {
+				why = "selects nothing"
+			}
+		}
+		if why != "" {
+			return nil, &Error{Line: c.Line, Msg: c.Text + ": " + why, Code: ExitRuntime}
+		}
+		if c.Redact && r.OnSecret != nil {
+			if s, err := render(v); err == nil && s != "" {
+				r.OnSecret(s)
+			}
+		}
+		out[c.Name] = v
+	}
+	return out, nil
+}
+
+// implicit checks the HTTP line: version, status and header lines,
+// reporting every failure.
+func (r *Runner) implicit(want *Response, resp *http.Response) error {
 	var errs []error
 	fail := func(line int, format string, args ...any) {
 		errs = append(errs, &Error{Line: line, Msg: fmt.Sprintf(format, args...), Code: ExitAssert})
@@ -165,7 +295,7 @@ func (r *Runner) check(want *Response, resp *http.Response, data []byte, dur tim
 		fail(want.Line, "HTTP %d: got %d", want.Status, resp.StatusCode)
 	}
 	for _, h := range want.Headers {
-		v, err := expand(h.Value, h.Line, r.Lookup)
+		v, err := expand(h.Value, h.Line, r)
 		if err != nil {
 			return err
 		}
@@ -178,66 +308,26 @@ func (r *Runner) check(want *Response, resp *http.Response, data []byte, dur tim
 			}
 		}
 	}
+	return errors.Join(errs...)
+}
 
-	var doc any
-	var docErr error
-	decoded := false
-	for _, a := range want.Asserts {
+// asserts checks [Asserts], reporting every failure.
+func (r *Runner) asserts(as []Assert, resp *response) error {
+	var errs []error
+	for _, a := range as {
 		var w any
 		if a.Want != nil {
 			var err error
-			if w, err = a.want(r.Lookup); err != nil {
+			if w, err = a.want(r); err != nil {
 				return err
 			}
 		}
-		var got any = none{}
-		switch a.Query {
-		case "status":
-			got = json.Number(strconv.Itoa(resp.StatusCode))
-		case "duration":
-			got = json.Number(strconv.FormatInt(dur.Milliseconds(), 10))
-		case "body":
-			got = string(data)
-		case "header": // several values make a list, as in hurl
-			switch vs := resp.Header.Values(a.Arg); len(vs) {
-			case 0:
-			case 1:
-				got = vs[0]
-			default:
-				l := make([]any, len(vs))
-				for i, v := range vs {
-					l[i] = v
-				}
-				got = l
-			}
-		case "jsonpath":
-			if !decoded {
-				doc, docErr = decodeJSON(data)
-				decoded = true
-			}
-			if docErr != nil {
-				fail(a.Line, "%s: the body is not JSON: %v", a.Text, docErr)
-				continue
-			}
-			// Selecting nothing is none, even for a wildcard, as in hurl.
-			switch nodes := a.Path.eval(doc); {
-			case len(nodes) == 0:
-			case a.Path.definite:
-				got = nodes[0]
-			default:
-				got = nodes
-			}
-		}
-		if a.Count {
-			l, ok := got.([]any)
-			if !ok {
-				fail(a.Line, "%s: count needs a list, got %s", a.Text, show(got))
-				continue
-			}
-			got = json.Number(strconv.Itoa(len(l)))
-		}
-		if !a.check(got, w) {
-			fail(a.Line, "%s: got %s", a.Text, show(got))
+		got, why := resp.query(a.Query)
+		switch {
+		case why != "":
+			errs = append(errs, &Error{Line: a.Line, Msg: a.Text + ": " + why, Code: ExitAssert})
+		case !a.check(got, w):
+			errs = append(errs, &Error{Line: a.Line, Msg: a.Text + ": got " + show(got), Code: ExitAssert})
 		}
 	}
 	return errors.Join(errs...)

@@ -12,19 +12,37 @@ import (
 	"time"
 )
 
-// Assert is one line of an [Asserts] section:
+// Query is what an assert or capture reads from a response:
 //
-//	query [filter] [not] predicate [value]
-type Assert struct {
-	Line  int
-	Text  string // as written, for messages
-	Query string // status, header, jsonpath, body or duration
+//	status | duration | body | header "Name" | jsonpath "$.path", then [count]
+type Query struct {
+	Kind  string // status, header, jsonpath, body or duration
 	Arg   string // header name or JSONPath
 	Path  *jsonPath
 	Count bool // the count filter
-	Not   bool
-	Pred  string
-	Want  *Value // nil for predicates without a value
+}
+
+// Assert is one line of an [Asserts] section:
+//
+//	query [not] predicate [value]
+type Assert struct {
+	Line int
+	Text string // as written, for messages
+	Query
+	Not  bool
+	Pred string
+	Want *Value // nil for predicates without a value
+}
+
+// Capture is one line of a [Captures] section:
+//
+//	name: query [redact]
+type Capture struct {
+	Line int
+	Text string
+	Name string
+	Query
+	Redact bool // hide the value in output
 }
 
 // Value is an expected value as written.
@@ -117,44 +135,55 @@ func (l *lexer) delimited(q byte) (string, error) {
 	return "", fmt.Errorf("unterminated %c", q)
 }
 
+// parseQuery reads a query and its optional count filter. example names
+// the line's kind for the error on an empty line.
+func parseQuery(l *lexer, line int, example string) (Query, error) {
+	var q Query
+	q.Kind = l.word()
+	switch q.Kind {
+	case "status", "body", "duration":
+	case "header", "jsonpath":
+		arg, err := l.delimited('"')
+		if err != nil {
+			return q, parseErr(line, "%s needs a quoted argument: %v", q.Kind, err)
+		}
+		q.Arg = arg
+		if q.Kind == "jsonpath" {
+			p, err := parseJSONPath(arg)
+			if err != nil {
+				return q, parseErr(line, "%v", err)
+			}
+			q.Path = p
+		}
+	case "":
+		return q, parseErr(line, "want %s, got %q", example, l.s)
+	default:
+		if slices.Contains(otherQueries, q.Kind) {
+			return q, parseErr(line, "query %s is not supported", q.Kind)
+		}
+		return q, parseErr(line, "unknown query %q", q.Kind)
+	}
+	save := l.i
+	if l.word() == "count" {
+		q.Count = true
+	} else {
+		l.i = save
+	}
+	return q, nil
+}
+
 func parseAssert(text string, line int) (Assert, error) {
 	a := Assert{Line: line, Text: text}
 	fail := func(format string, args ...any) (Assert, error) {
 		return a, parseErr(line, format, args...)
 	}
 	l := &lexer{s: text}
-	a.Query = l.word()
-	switch a.Query {
-	case "status", "body", "duration":
-	case "header", "jsonpath":
-		arg, err := l.delimited('"')
-		if err != nil {
-			return fail("%s needs a quoted argument: %v", a.Query, err)
-		}
-		a.Arg = arg
-		if a.Query == "jsonpath" {
-			p, err := parseJSONPath(arg)
-			if err != nil {
-				return fail("%v", err)
-			}
-			a.Path = p
-		}
-	case "":
-		return fail("want an assert like jsonpath \"$.id\" == 1, got %q", text)
-	default:
-		for _, q := range otherQueries {
-			if q == a.Query {
-				return fail("query %s is not supported", q)
-			}
-		}
-		return fail("unknown query %q", a.Query)
+	q, err := parseQuery(l, line, `an assert like jsonpath "$.id" == 1`)
+	if err != nil {
+		return a, err
 	}
-
+	a.Query = q
 	w := l.word()
-	if w == "count" {
-		a.Count = true
-		w = l.word()
-	}
 	if w == "not" {
 		a.Not = true
 		w = l.word()
@@ -178,7 +207,7 @@ func parseAssert(text string, line int) (Assert, error) {
 		}
 		a.Want = &v
 	case w == "":
-		return fail("want a predicate such as == or exists after %s", a.Query)
+		return fail("want a predicate such as == or exists after %s", a.Kind)
 	default:
 		return fail("%s is not supported (want a predicate such as == or exists; count is the only filter)", w)
 	}
@@ -186,6 +215,32 @@ func parseAssert(text string, line int) (Assert, error) {
 		return fail("unexpected %q", l.s[l.i:])
 	}
 	return a, nil
+}
+
+var captureRe = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$`)
+
+func parseCapture(text string, line int) (Capture, error) {
+	c := Capture{Line: line, Text: text}
+	m := captureRe.FindStringSubmatch(text)
+	if m == nil {
+		return c, parseErr(line, `want a capture like id: jsonpath "$.id", got %q`, text)
+	}
+	c.Name = m[1]
+	l := &lexer{s: m[2]}
+	q, err := parseQuery(l, line, `a query like jsonpath "$.id"`)
+	if err != nil {
+		return c, err
+	}
+	c.Query = q
+	if w := l.word(); w == "redact" {
+		c.Redact = true
+	} else if w != "" {
+		return c, parseErr(line, "%s is not supported (count is the only filter)", w)
+	}
+	if !l.end() {
+		return c, parseErr(line, "unexpected %q", l.s[l.i:])
+	}
+	return c, nil
 }
 
 // value reads an expected value.
@@ -227,11 +282,11 @@ func (l *lexer) value() (Value, error) {
 
 // want returns the expected value with templates filled: a string,
 // json.Number, bool, nil or *regexp.Regexp.
-func (a *Assert) want(look Lookup) (any, error) {
+func (a *Assert) want(sc scope) (any, error) {
 	v := a.Want
 	switch v.Kind {
 	case 's':
-		s, err := expand(v.Text, a.Line, look)
+		s, err := expand(v.Text, a.Line, sc)
 		if err != nil {
 			return nil, err
 		}
@@ -252,8 +307,20 @@ func (a *Assert) want(look Lookup) (any, error) {
 	case '0':
 		return nil, nil
 	}
-	// An unquoted template takes the type its value looks like.
-	s, err := expand(v.Text, a.Line, look)
+	// An unquoted template keeps a captured value's type; a variable from
+	// the environment takes the type its text looks like, as hurl does
+	// with --variable.
+	if m := templateRe.FindStringSubmatch(v.Text); m != nil && m[0] == v.Text {
+		if x, ok := sc.value(m[1]); ok {
+			if _, isEnv := x.(envString); !isEnv {
+				if _, err := render(x); err != nil {
+					return nil, &Error{Line: a.Line, Msg: fmt.Sprintf("{{%s}} is %s, which can't be compared", m[1], show(x)), Code: ExitRuntime}
+				}
+				return x, nil
+			}
+		}
+	}
+	s, err := expand(v.Text, a.Line, sc)
 	if err != nil {
 		return nil, err
 	}

@@ -14,7 +14,7 @@ func TestParseAssert(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.Query != "jsonpath" || a.Arg != "$.items" || !a.Count || !a.Not || a.Pred != "==" || *a.Want != (Value{'n', "3"}) {
+	if a.Kind != "jsonpath" || a.Arg != "$.items" || !a.Count || !a.Not || a.Pred != "==" || *a.Want != (Value{'n', "3"}) {
 		t.Errorf("got %+v", a)
 	}
 	a, err = parseAssert(`header "X-Re" matches /^a\/b\d+$/`, 1)

@@ -1,6 +1,7 @@
 // Package hurl parses and runs a small subset of the Hurl file format
 // (https://hurl.dev): requests with headers, [Query] and JSON or text bodies,
-// and the HTTP status line with implicit header asserts and [Asserts]. Anything else in the
+// and the HTTP status line with implicit header asserts, [Captures] and
+// [Asserts]. Anything else in the
 // format is rejected with an error naming it, never ignored.
 package hurl
 
@@ -57,11 +58,12 @@ type Body struct {
 
 // Response is what an entry expects back.
 type Response struct {
-	Line    int
-	Version string // "" for any, else "1.0", "1.1", "2" or "3"
-	Status  int    // 0 for *
-	Headers []Pair // implicit asserts: the header must have this value
-	Asserts []Assert
+	Line     int
+	Version  string // "" for any, else "1.0", "1.1", "2" or "3"
+	Status   int    // 0 for *
+	Headers  []Pair // implicit asserts: the header must have this value
+	Captures []Capture
+	Asserts  []Assert
 }
 
 var (
@@ -321,9 +323,7 @@ func (p *parser) responseSections(r *Response) error {
 			return nil
 		}
 		switch name {
-		case "Asserts":
-		case "Captures":
-			return parseErr(p.num(), "[Captures] is not supported yet")
+		case "Asserts", "Captures":
 		default:
 			return parseErr(p.num(), "[%s] belongs to the request, before the HTTP line", name)
 		}
@@ -332,11 +332,19 @@ func (p *parser) responseSections(r *Response) error {
 			if _, ok := p.section(); ok || methodRe.MatchString(p.cur()) || p.bodyStart() {
 				break
 			}
-			a, err := parseAssert(p.cur(), p.num())
-			if err != nil {
-				return err
+			if name == "Captures" {
+				c, err := parseCapture(p.cur(), p.num())
+				if err != nil {
+					return err
+				}
+				r.Captures = append(r.Captures, c)
+			} else {
+				a, err := parseAssert(p.cur(), p.num())
+				if err != nil {
+					return err
+				}
+				r.Asserts = append(r.Asserts, a)
 			}
-			r.Asserts = append(r.Asserts, a)
 			p.i++
 		}
 	}
