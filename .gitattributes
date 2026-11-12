@@ -1,0 +1,2 @@
+# Keep the CRLF line: it tests that variables files accept Windows line endings.
+compat/testdata/variables/file-format.env -text
