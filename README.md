@@ -13,32 +13,44 @@ whole files in CI. Files growl accepts also run unchanged under real hurl.
 
 ## A first request
 
-Save this as `go.hurl`:
+Save this as `octocat.hurl`:
 
 ```hurl
-GET https://api.github.com/repos/golang/go/languages
+GET https://api.github.com/users/octocat
 HTTP 200
 [Asserts]
-jsonpath "$.Go" > 1000000
-jsonpath "$.*" count > 3
+jsonpath "$.login" == "octocat"
+jsonpath "$.type" == "User"
+jsonpath "$.public_repos" > 0
 ```
 
-and run it:
+The first line is the request. Everything after it describes the response
+you expect:
+
+- `HTTP 200`: the status must be 200.
+- `jsonpath "$.login" == "octocat"`: the JSON body's `login` field must be
+  `"octocat"`. `$` is the whole body, and `.login` is a field in it.
+- `jsonpath "$.type" == "User"`: it's a user, not an organization.
+- `jsonpath "$.public_repos" > 0`: the user has at least one public repo.
+
+Run it:
 
 ```console
-$ growl go.hurl
-GET https://api.github.com/repos/golang/go/languages
-HTTP/2.0 200 OK  396ms
+$ growl octocat.hurl
+GET https://api.github.com/users/octocat
+HTTP/2.0 200 OK  417ms
 {
-  "Go": 58192318,
-  "Assembly": 3298169,
+  "login": "octocat",
+  ...
+  "type": "User",
+  ...
+  "public_repos": 8,
   ...
 }
 ```
 
 growl prints the request, the status with its timing, and the body, with JSON
-indented. The lines under `HTTP 200` are checks. When they all pass, growl
-exits 0.
+indented. All the checks passed, so growl exits 0.
 
 ## Chaining requests
 
@@ -60,6 +72,10 @@ HTTP 200
 [Asserts]
 jsonpath "$.type" == "Organization"
 ```
+
+`owner: jsonpath "$.owner.login"` saves the owner's name as `owner`, and the
+second request uses it as `{{owner}}`. `count` checks how many items a list
+has: here, that the repository has at least one topic.
 
 When a check fails, growl prints the file, line, check and the value it got
 instead, then exits 4. Every failing check of a request is reported, not just

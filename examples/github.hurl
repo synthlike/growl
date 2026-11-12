@@ -9,8 +9,9 @@ jsonpath "$.created_at" isIsoDate
 header "Content-Type" contains "application/json"
 duration < 5000
 
-GET https://api.github.com/repos/golang/go/languages
+GET https://api.github.com/repos/golang/go
 HTTP 200
 [Asserts]
-jsonpath "$.Go" > 1000000
-jsonpath "$.*" count > 3
+jsonpath "$.full_name" == "golang/go"
+jsonpath "$.language" == "Go"
+jsonpath "$.archived" == false
