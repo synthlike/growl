@@ -6,15 +6,18 @@ JSON asserts and captures, built to run one request at a time from an editor
 
 ## Layout
 
-- `cmd/growl`: entry point (`growl [-line n | -to n] [-variable n=v] [-variables-file f] [-stdin] [-i] file.hurl`).
-- `internal/hurl`: parser (with line numbers), templates, JSONPath, asserts, runner.
+- `cmd/growl`: entry point (`growl [-line n | -to n] [-variable n=v] [-variables-file f] [-signer cmd] [-stdin] [-i] file.hurl`).
+- `internal/hurl`: parser (with line numbers), templates, JSONPath, asserts, runner, and the `Signer` hook.
+- `internal/signer`: the `-signer` command protocol (JSON on stdin/stdout).
+- `examples/signers`: HMAC, RSA and AES+RSA signer scripts (jq, openssl).
 - `compat`: runs `testdata` cases through real hurl and growl and fails where
   they disagree; skipped when hurl isn't installed.
 
 ## Rules
 
 - Stay a strict subset of Hurl: a file growl accepts must mean the same thing
-  to real hurl, except for the documented GROWL_VARIABLE_ and plain-env variable fallbacks.
+  to real hurl, except for the documented GROWL_VARIABLE_ and plain-env variable fallbacks
+  and `-signer`, which lives outside the file so files stay plain hurl.
   Where hurl silently drops part of a file (a second aliased section), growl
   rejects it instead.
   Unsupported Hurl features fail with an error naming the feature and line;

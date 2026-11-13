@@ -15,6 +15,7 @@ import (
 	"syscall"
 
 	"github.com/synthlike/growl/internal/hurl"
+	"github.com/synthlike/growl/internal/signer"
 )
 
 func main() {
@@ -25,13 +26,15 @@ func main() {
 }
 
 const usage = `usage: growl [-line n | -to n] [-variable name=value]... [-variables-file file]...
-             [-stdin] [-i] [-timeout d] file.hurl
+             [-signer cmd] [-stdin] [-i] [-timeout d] file.hurl
 
 Runs the requests in a Hurl file in order: all of them, only the one at
 -line, or the ones up to and including it with -to. Captures carry over
 to later requests.
 {{name}} is a capture, then -variable, then -variables-file, then
 GROWL_VARIABLE_name, HURL_VARIABLE_name or name from the environment.
+-signer runs a command to sign each request (and decrypt its response),
+speaking JSON on stdin and stdout; it defaults to $GROWL_SIGNER.
 Exit codes: 1 usage, 2 parse, 3 runtime, 4 assert.
 
 `
@@ -46,6 +49,11 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	fromStdin := fs.Bool("stdin", false, "read the file's text from stdin; the file argument only names it")
 	headers := fs.Bool("i", false, "print response headers")
 	timeout := fs.Duration("timeout", 0, "per-request timeout, such as 30s (default none)")
+	envSigner := ""
+	if v, ok := getenv("GROWL_SIGNER"); ok {
+		envSigner = v
+	}
+	signerCmd := fs.String("signer", envSigner, "command that signs requests and decrypts responses (default $GROWL_SIGNER)")
 	var variables, files repeated
 	fs.Var(&variables, "variable", "define a variable, name=value (repeatable)")
 	fs.Var(&files, "variables-file", "read name=value lines from a file (repeatable)")
@@ -137,6 +145,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			}
 			return "", false
 		},
+	}
+	if *signerCmd != "" {
+		r.Signer = &signer.Command{Cmd: *signerCmd, File: name, Stderr: errOut, OnSecret: r.OnSecret}
 	}
 	for i, e := range es {
 		if i > 0 {

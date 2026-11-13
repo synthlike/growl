@@ -37,6 +37,9 @@ type Runner struct {
 	// OnSecret receives each value captured with redact, before it can be
 	// printed, so output can hide it.
 	OnSecret func(string)
+	// Signer, if set, rewrites each request before it's sent and, when it
+	// asks to, the response before it's printed and checked.
+	Signer Signer
 
 	captures map[string]any
 }
@@ -80,6 +83,13 @@ func (r *Runner) Run(ctx context.Context, e Entry) error {
 	if err != nil {
 		return err
 	}
+	var sent Message
+	var state []byte
+	if r.Signer != nil {
+		if req, sent, state, err = r.sign(ctx, e.Line, req); err != nil {
+			return err
+		}
+	}
 	fmt.Fprintf(r.Out, "%s %s\n", req.Method, req.URL)
 	start := time.Now()
 	hr, err := r.Client.Do(req)
@@ -90,6 +100,17 @@ func (r *Runner) Run(ctx context.Context, e Entry) error {
 	data, err := io.ReadAll(hr.Body)
 	if err != nil {
 		return &Error{Line: e.Line, Msg: "reading the response: " + err.Error(), Code: ExitRuntime}
+	}
+	if state != nil {
+		got := Message{Status: hr.StatusCode, Header: hr.Header, Body: data}
+		opened, err := r.Signer.Open(ctx, e.Line, sent, got, state)
+		if err != nil {
+			return &Error{Line: e.Line, Msg: "signer: " + err.Error(), Code: ExitRuntime}
+		}
+		hr.Header, data = opened.Header, opened.Body
+		if hr.Header == nil {
+			hr.Header = http.Header{}
+		}
 	}
 	resp := &response{Response: hr, data: data, dur: time.Since(start)}
 

@@ -183,3 +183,36 @@ func TestVariableFlags(t *testing.T) {
 		}
 	}
 }
+
+func TestSigner(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, r.Header.Get("X-Sig")+"\n")
+	}))
+	defer srv.Close()
+	sign := func(sig string) string {
+		return `cat >/dev/null; echo '{"request": {"headers": [["X-Sig", "` + sig + `"]]}, "secrets": ["` + sig + `"]}'`
+	}
+	for _, tc := range []struct {
+		args []string
+		env  string
+		want string
+	}{
+		// -signer wins over an env signer that wouldn't hide its value, and its secret is hidden.
+		{[]string{"-signer", sign("flag-sig")}, `cat >/dev/null; echo '{"request": {"headers": [["X-Sig", "env-sig"]]}}'`, "***\n"},
+		{nil, sign("env-sig"), "***\n"},
+		{nil, "", "\nnone\n"},
+	} {
+		getenv := func(k string) (string, bool) {
+			if k == "GROWL_SIGNER" && tc.env != "" {
+				return tc.env, true
+			}
+			return "", false
+		}
+		var out strings.Builder
+		args := append(tc.args, "-stdin", "a.hurl")
+		code := run(context.Background(), args, strings.NewReader("GET "+srv.URL+"\nX-Sig: none\n"), &out, io.Discard, getenv, nil)
+		if code != 0 || !strings.HasSuffix(out.String(), tc.want) || strings.Contains(out.String(), "-sig") {
+			t.Errorf("%v / %q: code %d, output %q", tc.args, tc.env, code, out.String())
+		}
+	}
+}

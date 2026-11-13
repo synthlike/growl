@@ -115,6 +115,7 @@ repo.hurl:10: undefined variable owner (captured by the request at line 1; run u
 | `-stdin` | Read the file's text from stdin; the argument only names it (for unsaved editor buffers) |
 | `-i` | Also print response headers |
 | `-timeout d` | Give up on a request after `d`, such as `30s` (default: never) |
+| `-signer cmd` | Sign each request (and decrypt its response) with a command; default `$GROWL_SIGNER` |
 
 ## Variables and secrets
 
@@ -193,6 +194,57 @@ a Content-Type. A request with `[FormParams]` can't also have a body.
 `[BasicAuth]` adds to an `Authorization` header you write, rather than
 replacing it, as in hurl.
 
+## Signing requests
+
+Many APIs want each request signed (HMAC or RSA over the method, path,
+timestamp and body), or the body encrypted (AES, with the key wrapped in
+RSA). Each API defines its own scheme, so growl doesn't build any in. A
+command you supply does the signing:
+
+```sh
+HMAC_SECRET=… growl -signer examples/signers/hmac-sha256.sh api.hurl
+```
+
+Before each request, the command gets the request as JSON on stdin. It
+writes the request to send on stdout:
+
+```json
+{"phase": "request", "file": "api.hurl", "line": 12,
+ "request": {"method": "POST", "url": "https://api.example.com/orders?dry=true",
+             "headers": [["Content-Type", "application/json"]],
+             "body": "{\"sku\": \"w\"}"}}
+```
+
+```json
+{"request": {"headers": [["Content-Type", "application/json"],
+                         ["X-Signature", "…"]]}}
+```
+
+Fields left out stay as they were. `headers`, when given, replaces them
+all. Other fields are ignored, so `jq '.request.headers += [["X-Sig", $s]]'`
+on the input works. A body that isn't UTF-8 travels as `body_base64`.
+
+To decrypt responses, return a `state` too, such as the AES key. growl then
+calls the command again with `"phase": "response"`, the request as sent,
+the `state` and the `response` (`status`, `headers`, body). It answers with
+`{"response": {…}}`, and growl prints and checks that response instead.
+List any values to hide from the output under `"secrets"`.
+
+If the command exits non-zero, the request fails with what it wrote to
+stderr. In `examples/signers` (they need jq and openssl):
+
+| Script | What it does |
+| --- | --- |
+| `hmac-sha256.sh` | HMAC-SHA256 of method, path, timestamp and body hash, in `X-Signature` |
+| `rsa-sha256.sh` | The same string, signed with an RSA private key |
+| `aes-rsa.sh` | AES-256 body with an RSA-OAEP-wrapped key; decrypts the response |
+
+Copy one and change it to match your API. In hiss, set `GROWL_SIGNER` in
+an environment's script to sign every request in that environment.
+
+Signing is growl's own. The files stay plain hurl, but under hurl they go
+out unsigned.
+
 ## What's supported
 
 | Area | Supported |
@@ -221,6 +273,7 @@ unsupported feature and its line. It never quietly skips part of a file.
 - Plain environment variables work, as well as `GROWL_VARIABLE_name`. hurl
   reads only `HURL_VARIABLE_name`, `--variable` and `--variables-file`.
 - `-line`, `-to` and `-stdin` are growl's own options.
+- `-signer` and `GROWL_SIGNER` are growl's own. hurl has no signing hook.
 - Output: growl always prints each request and response, and hides secrets.
   Exit codes match hurl: 1 usage, 2 parse, 3 runtime, 4 assert.
 
