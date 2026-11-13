@@ -141,11 +141,15 @@ func (r *Runner) request(ctx context.Context, e Entry) (*http.Request, error) {
 			q = append(q, pu.RawQuery)
 		}
 		for _, p := range e.Query {
+			k, err := expand(p.Name, p.Line, r)
+			if err != nil {
+				return nil, err
+			}
 			v, err := expand(p.Value, p.Line, r)
 			if err != nil {
 				return nil, err
 			}
-			q = append(q, queryEscape(p.Name)+"="+queryEscape(v))
+			q = append(q, queryEscape(k)+"="+queryEscape(v))
 		}
 		pu.RawQuery = strings.Join(q, "&")
 		u = pu.String()

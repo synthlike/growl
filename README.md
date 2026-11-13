@@ -182,7 +182,8 @@ session: jsonpath "$.token" redact
 It behaves like hurl in the details too. Redirects aren't followed. JSON bodies
 are sent as `application/json` unless you set a type. A header with several
 values is a list. A captured `"7"` doesn't equal `7`. Numbers compare exactly,
-so `9.50 == 9.5`.
+so `9.50 == 9.5`. In header and parameter values, `#` starts a comment;
+write `\#` for a literal one.
 
 **Not supported:** XML, HTML and XPath; cookies; form and multipart bodies;
 `[Options]`; filters other than `count`; JSONPath filters and slices;

@@ -8,7 +8,10 @@ package hurl
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Exit codes, as hurl uses them.
@@ -43,7 +46,8 @@ type Entry struct {
 	Response *Response
 }
 
-// Pair is a header or parameter as written, before templates are expanded.
+// Pair is a header or parameter as written, with comments cut and escapes
+// decoded, before templates are expanded.
 type Pair struct {
 	Line        int
 	Name, Value string
@@ -70,7 +74,6 @@ var (
 	methodRe  = regexp.MustCompile(`^([A-Z]+)\s+(\S+)$`)
 	statusRe  = regexp.MustCompile(`^HTTP(?:/(1\.0|1\.1|2|3))?\s+([0-9]{3}|\*)$`)
 	headerRe  = regexp.MustCompile("^([A-Za-z0-9!#$%&'*+.^_`|~-]+)\\s*:\\s*(.*)$")
-	paramRe   = regexp.MustCompile(`^([^:\s][^:]*?)\s*:\s*(.*)$`)
 	sectionRe = regexp.MustCompile(`^\[([A-Za-z]+)\]$`)
 )
 
@@ -147,8 +150,13 @@ func (p *parser) entry() (Entry, error) {
 	}
 	e := Entry{Line: p.num(), Method: m[1], URL: m[2]}
 	p.i++
-	e.Headers = p.headers()
+	hs, err := p.headers()
+	if err != nil {
+		return e, err
+	}
+	e.Headers = hs
 
+	seen := map[string]bool{}
 	for p.skip(); !p.done(); p.skip() {
 		name, ok := p.section()
 		if !ok {
@@ -160,12 +168,21 @@ func (p *parser) entry() (Entry, error) {
 		case !sections[name]:
 			return e, parseErr(p.num(), "[%s] is not supported", name)
 		}
+		// Each section once per request, as in hurl; aliases count as one.
+		kind := map[string]string{"QueryStringParams": "Query", "Form": "FormParams"}[name]
+		if kind == "" {
+			kind = name
+		}
+		if seen[kind] {
+			return e, parseErr(p.num(), "[%s] appears twice in this request", name)
+		}
+		seen[kind] = true
 		p.i++
 		ps, err := p.params()
 		if err != nil {
 			return e, err
 		}
-		e.Query = append(e.Query, ps...)
+		e.Query = ps
 	}
 
 	if p.skip(); !p.done() && p.bodyStart() {
@@ -183,7 +200,9 @@ func (p *parser) entry() (Entry, error) {
 				fmt.Sscan(m[2], &r.Status)
 			}
 			p.i++
-			r.Headers = p.headers()
+			if r.Headers, err = p.headers(); err != nil {
+				return e, err
+			}
 			e.Response = r
 			if err := p.responseSections(r); err != nil {
 				return e, err
@@ -203,17 +222,21 @@ func (p *parser) entry() (Entry, error) {
 }
 
 // headers reads Name: value lines.
-func (p *parser) headers() []Pair {
+func (p *parser) headers() ([]Pair, error) {
 	var hs []Pair
 	for p.skip(); !p.done(); p.skip() {
 		m := headerRe.FindStringSubmatch(p.cur())
 		if m == nil {
 			break
 		}
-		hs = append(hs, Pair{Line: p.num(), Name: m[1], Value: m[2]})
+		v, err := value(m[2], p.num())
+		if err != nil {
+			return nil, err
+		}
+		hs = append(hs, Pair{Line: p.num(), Name: m[1], Value: v})
 		p.i++
 	}
-	return hs
+	return hs, nil
 }
 
 // params reads the key: value lines of a section.
@@ -221,17 +244,107 @@ func (p *parser) params() ([]Pair, error) {
 	var ps []Pair
 	for p.skip(); !p.done(); p.skip() {
 		l := p.cur()
-		if _, ok := p.section(); ok || methodRe.MatchString(l) || statusRe.MatchString(l) || p.bodyStart() {
+		pr, err := param(l, p.num())
+		if strings.HasPrefix(l, "{{") && err == nil {
+			// {{name}}: value is a param, not a JSON body.
+		} else if _, ok := p.section(); ok || methodRe.MatchString(l) || statusRe.MatchString(l) || p.bodyStart() {
 			break
 		}
-		m := paramRe.FindStringSubmatch(l)
-		if m == nil {
-			return nil, parseErr(p.num(), "want key: value, got %q", l)
+		if err != nil {
+			return nil, err
 		}
-		ps = append(ps, Pair{Line: p.num(), Name: m[1], Value: m[2]})
+		ps = append(ps, pr)
 		p.i++
 	}
 	return ps, nil
+}
+
+// param splits a key: value line. Keys hold letters, digits, _-.[]@$ and
+// templates, as in hurl; growl doesn't take hurl's escapes in keys.
+func param(l string, line int) (Pair, error) {
+	i := 0
+	for i < len(l) {
+		if strings.HasPrefix(l[i:], "{{") {
+			end := strings.Index(l[i:], "}}")
+			if end < 0 {
+				break
+			}
+			i += end + 2
+			continue
+		}
+		c, n := utf8.DecodeRuneInString(l[i:])
+		if !unicode.IsLetter(c) && !unicode.IsDigit(c) && !strings.ContainsRune("_-.[]@$", c) {
+			break
+		}
+		i += n
+	}
+	key, rest := l[:i], strings.TrimLeft(l[i:], " \t")
+	switch {
+	case key != "" && strings.HasPrefix(rest, ":"):
+	case key != "" && i < len(l) && l[i] == '\\':
+		return Pair{}, parseErr(line, "escapes in keys are not supported")
+	default:
+		return Pair{}, parseErr(line, "want key: value, got %q", l)
+	}
+	v, err := value(rest[1:], line)
+	if err != nil {
+		return Pair{}, err
+	}
+	return Pair{Line: line, Name: key, Value: v}, nil
+}
+
+// value reads a header or parameter value as hurl does: an unescaped # starts
+// a comment, and \" \\ \# \b \f \n \r \t and \u{hex} are escapes.
+func value(s string, line int) (string, error) {
+	s = strings.TrimLeft(s, " \t")
+	var b strings.Builder
+	keep := 0 // the length without trailing unescaped spaces
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '#' {
+			break
+		}
+		if c != '\\' {
+			b.WriteByte(c)
+			if c != ' ' && c != '\t' {
+				keep = b.Len()
+			}
+			continue
+		}
+		i++
+		if i == len(s) {
+			return "", parseErr(line, "a value can't end with \\")
+		}
+		switch s[i] {
+		case '"', '\\', '#':
+			b.WriteByte(s[i])
+		case 'b':
+			b.WriteByte('\b')
+		case 'f':
+			b.WriteByte('\f')
+		case 'n':
+			b.WriteByte('\n')
+		case 'r':
+			b.WriteByte('\r')
+		case 't':
+			b.WriteByte('\t')
+		case 'u':
+			end := strings.IndexByte(s[i:], '}')
+			if !strings.HasPrefix(s[i:], "u{") || end < 0 {
+				return "", parseErr(line, "want \\u{hex}")
+			}
+			n, err := strconv.ParseUint(s[i+2:i+end], 16, 32)
+			if err != nil || n > unicode.MaxRune {
+				return "", parseErr(line, "bad escape \\%s", s[i:i+end+1])
+			}
+			b.WriteRune(rune(n))
+			i += end
+		default:
+			return "", parseErr(line, "unknown escape \\%c", s[i])
+		}
+		keep = b.Len()
+	}
+	return b.String()[:keep], nil
 }
 
 // bodyStart reports whether the current line starts a body.

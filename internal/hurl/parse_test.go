@@ -74,12 +74,32 @@ func TestParseErrors(t *testing.T) {
 		{"POST http://x\nfile,data.bin;", "2: file bodies are not supported"},
 		{"GET http://x\nHTTP 200\n{}", "3: response body asserts are not supported yet"},
 		{"GET http://x\nHTTP 200\nnot a header", `3: unexpected "not a header" (want a header, section, body, HTTP line or the next request)`},
+		// hurl drops the second of two aliased sections; growl says so.
+		{"GET http://x\n[Query]\na: 1\n[QueryStringParams]\nb: 2", "4: [QueryStringParams] appears twice in this request"},
+		{"GET http://x\n[Query]\na\\:b: 1", "3: escapes in keys are not supported"},
+		{"GET http://x\n[Query]\na b: 1", `3: want key: value, got "a b: 1"`},
+		{"GET http://x\nX: a\\q", `2: unknown escape \q`},
+		{"GET http://x\nX: a\\u{110000}", `2: bad escape \u{110000}`},
 	} {
 		_, err := Parse(tc.src)
 		var e *Error
 		if !errors.As(err, &e) || e.Error() != tc.want || e.Code != ExitParse {
 			t.Errorf("Parse(%q) = %v, want %s", tc.src, err, tc.want)
 		}
+	}
+}
+
+func TestParseValues(t *testing.T) {
+	es, err := Parse("POST http://x\nX: a # c\n[Query]\nbob:  p\\#w\\t  # c\n{{k}}: \\u{41}\\\\\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := es[0]
+	if e.Headers[0].Value != "a" {
+		t.Errorf("header = %q", e.Headers[0].Value)
+	}
+	if len(e.Query) != 2 || e.Query[0] != (Pair{4, "bob", "p#w\t"}) || e.Query[1] != (Pair{5, "{{k}}", `A\`}) {
+		t.Errorf("query = %+v", e.Query)
 	}
 }
 
