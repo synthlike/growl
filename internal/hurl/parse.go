@@ -1,6 +1,6 @@
 // Package hurl parses and runs a small subset of the Hurl file format
-// (https://hurl.dev): requests with headers, [Query] and JSON or text bodies,
-// and the HTTP status line with implicit header asserts, [Captures] and
+// (https://hurl.dev): requests with headers, [Query], [FormParams],
+// [BasicAuth] and JSON or text bodies, and the HTTP status line with implicit header asserts, [Captures] and
 // [Asserts]. Anything else in the
 // format is rejected with an error naming it, never ignored.
 package hurl
@@ -42,6 +42,8 @@ type Entry struct {
 	URL      string
 	Headers  []Pair
 	Query    []Pair
+	Form     []Pair // [FormParams]: sent as application/x-www-form-urlencoded
+	Auth     *Pair  // [BasicAuth]: Name is the user, Value the password
 	Body     *Body
 	Response *Response
 }
@@ -80,8 +82,8 @@ var (
 // sections are Hurl's section names; true marks the ones growl supports.
 var sections = map[string]bool{
 	"Query": true, "QueryStringParams": true,
-	"Form": false, "FormParams": false, "Multipart": false, "MultipartFormData": false,
-	"Cookies": false, "Options": false, "BasicAuth": false,
+	"Form": true, "FormParams": true, "Multipart": false, "MultipartFormData": false,
+	"Cookies": false, "Options": false, "BasicAuth": true,
 	"Asserts": false, "Captures": false,
 }
 
@@ -157,6 +159,7 @@ func (p *parser) entry() (Entry, error) {
 	e.Headers = hs
 
 	seen := map[string]bool{}
+	formLine := 0
 	for p.skip(); !p.done(); p.skip() {
 		name, ok := p.section()
 		if !ok {
@@ -177,15 +180,32 @@ func (p *parser) entry() (Entry, error) {
 			return e, parseErr(p.num(), "[%s] appears twice in this request", name)
 		}
 		seen[kind] = true
+		line := p.num()
 		p.i++
 		ps, err := p.params()
 		if err != nil {
 			return e, err
 		}
-		e.Query = ps
+		switch kind {
+		case "Query":
+			e.Query = ps
+		case "FormParams":
+			e.Form, formLine = ps, line
+		case "BasicAuth":
+			if len(ps) > 1 {
+				return e, parseErr(ps[1].Line, "[BasicAuth] takes one user: password line")
+			}
+			if len(ps) == 1 {
+				e.Auth = &ps[0]
+			}
+		}
 	}
 
 	if p.skip(); !p.done() && p.bodyStart() {
+		if len(e.Form) > 0 {
+			// hurl sends the body with the form's Content-Type: say so instead.
+			return e, parseErr(p.num(), "a body can't go with the [FormParams] at line %d", formLine)
+		}
 		b, err := p.body()
 		if err != nil {
 			return e, err

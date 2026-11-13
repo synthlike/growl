@@ -167,11 +167,37 @@ HTTP 200
 session: jsonpath "$.token" redact
 ```
 
+## Logging in and getting tokens
+
+`[BasicAuth]` sends a user and password, and `[FormParams]` sends a form.
+Together they make an OAuth client-credentials token request:
+
+```hurl
+POST {{AUTH_URL}}/oauth/token
+[BasicAuth]
+{{CLIENT_ID}}: {{CLIENT_SECRET}}
+[FormParams]
+grant_type: client_credentials
+scope: orders:read
+HTTP 200
+[Captures]
+token: jsonpath "$.access_token" redact
+
+GET {{API_URL}}/orders
+Authorization: Bearer {{token}}
+HTTP 200
+```
+
+The form goes out as `application/x-www-form-urlencoded`, unless you set
+a Content-Type. A request with `[FormParams]` can't also have a body.
+`[BasicAuth]` adds to an `Authorization` header you write, rather than
+replacing it, as in hurl.
+
 ## What's supported
 
 | Area | Supported |
 | --- | --- |
-| Requests | any method, headers, `[Query]`, JSON bodies, ```` ``` ```` and ```` ```json ```` blocks, `` `oneline` `` bodies |
+| Requests | any method, headers, `[Query]`, `[FormParams]`, `[BasicAuth]`, JSON bodies, ```` ``` ```` and ```` ```json ```` blocks, `` `oneline` `` bodies |
 | Responses | `HTTP 200`, `HTTP/2 200`, `HTTP *`, expected header lines under it |
 | Queries | `status`, `header "Name"`, `jsonpath "$..."`, `body`, `duration` (ms), and the `count` filter |
 | Checks | `==` `!=` `>` `>=` `<` `<=` `startsWith` `endsWith` `contains` `matches` `exists` `isEmpty`, the type checks (`isString`, `isInteger`, `isIsoDate`, `isUuid`, …), and `not` before any of them |
@@ -185,7 +211,7 @@ values is a list. A captured `"7"` doesn't equal `7`. Numbers compare exactly,
 so `9.50 == 9.5`. In header and parameter values, `#` starts a comment;
 write `\#` for a literal one.
 
-**Not supported:** XML, HTML and XPath; cookies; form and multipart bodies;
+**Not supported:** XML, HTML and XPath; cookies; multipart bodies;
 `[Options]`; filters other than `count`; JSONPath filters and slices;
 `file,` and `base64,` bodies. growl stops with an error naming the
 unsupported feature and its line. It never quietly skips part of a file.

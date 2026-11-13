@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -162,6 +163,22 @@ func (r *Runner) request(ctx context.Context, e Entry) (*http.Request, error) {
 		}
 		body = strings.NewReader(text)
 	}
+	if len(e.Form) > 0 {
+		// In order, with spaces as %20: as hurl does.
+		kv := make([]string, len(e.Form))
+		for i, p := range e.Form {
+			k, err := expand(p.Name, p.Line, r)
+			if err != nil {
+				return nil, err
+			}
+			v, err := expand(p.Value, p.Line, r)
+			if err != nil {
+				return nil, err
+			}
+			kv[i] = queryEscape(k) + "=" + queryEscape(v)
+		}
+		body = strings.NewReader(strings.Join(kv, "&"))
+	}
 	req, err := http.NewRequestWithContext(ctx, e.Method, u, body)
 	if err != nil {
 		return nil, &Error{Line: e.Line, Msg: err.Error(), Code: ExitRuntime}
@@ -177,8 +194,25 @@ func (r *Runner) request(ctx context.Context, e Entry) (*http.Request, error) {
 		}
 		req.Header.Add(h.Name, v)
 	}
-	if e.Body != nil && e.Body.JSON && req.Header.Get("Content-Type") == "" {
-		req.Header.Set("Content-Type", "application/json")
+	if e.Auth != nil {
+		user, err := expand(e.Auth.Name, e.Auth.Line, r)
+		if err != nil {
+			return nil, err
+		}
+		pass, err := expand(e.Auth.Value, e.Auth.Line, r)
+		if err != nil {
+			return nil, err
+		}
+		// Added after any Authorization header, not replacing it: hurl sends both.
+		req.Header.Add("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(user+":"+pass)))
+	}
+	if req.Header.Get("Content-Type") == "" {
+		switch {
+		case e.Body != nil && e.Body.JSON:
+			req.Header.Set("Content-Type", "application/json")
+		case len(e.Form) > 0:
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		}
 	}
 	return req, nil
 }

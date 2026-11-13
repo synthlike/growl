@@ -75,7 +75,9 @@ func TestParseErrors(t *testing.T) {
 		{"GET http://x\nHTTP 200\n{}", "3: response body asserts are not supported yet"},
 		{"GET http://x\nHTTP 200\nnot a header", `3: unexpected "not a header" (want a header, section, body, HTTP line or the next request)`},
 		// hurl drops the second of two aliased sections; growl says so.
-		{"GET http://x\n[Query]\na: 1\n[QueryStringParams]\nb: 2", "4: [QueryStringParams] appears twice in this request"},
+		{"POST http://x\n[Form]\na: 1\n[FormParams]\nb: 2", "4: [FormParams] appears twice in this request"},
+		{"GET http://x\n[BasicAuth]\na: 1\nb: 2", "4: [BasicAuth] takes one user: password line"},
+		{"POST http://x\n[FormParams]\na: 1\n`x`", "4: a body can't go with the [FormParams] at line 2"},
 		{"GET http://x\n[Query]\na\\:b: 1", "3: escapes in keys are not supported"},
 		{"GET http://x\n[Query]\na b: 1", `3: want key: value, got "a b: 1"`},
 		{"GET http://x\nX: a\\q", `2: unknown escape \q`},
@@ -90,7 +92,7 @@ func TestParseErrors(t *testing.T) {
 }
 
 func TestParseValues(t *testing.T) {
-	es, err := Parse("POST http://x\nX: a # c\n[Query]\nbob:  p\\#w\\t  # c\n{{k}}: \\u{41}\\\\\n")
+	es, err := Parse("POST http://x\nX: a # c\n[BasicAuth]\nbob:  p\\#w\\t  # c\n[FormParams]\n{{k}}: \\u{41}\\\\\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,8 +100,11 @@ func TestParseValues(t *testing.T) {
 	if e.Headers[0].Value != "a" {
 		t.Errorf("header = %q", e.Headers[0].Value)
 	}
-	if len(e.Query) != 2 || e.Query[0] != (Pair{4, "bob", "p#w\t"}) || e.Query[1] != (Pair{5, "{{k}}", `A\`}) {
-		t.Errorf("query = %+v", e.Query)
+	if e.Auth == nil || *e.Auth != (Pair{4, "bob", "p#w\t"}) {
+		t.Errorf("auth = %+v", e.Auth)
+	}
+	if len(e.Form) != 1 || e.Form[0] != (Pair{6, "{{k}}", `A\`}) {
+		t.Errorf("form = %+v", e.Form)
 	}
 }
 

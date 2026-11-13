@@ -28,7 +28,7 @@ const shop = `{"id": 7, "price": 9.50, "name": "Dune", "tags": ["sf", "classic"]
 	"big": 12345678901234567890, "one": 1.0}`
 
 // request is what the server saw.
-type request struct{ Method, Query, ContentType, Body string }
+type request struct{ Method, Query, ContentType, Auth, Body string }
 
 type server struct {
 	*httptest.Server
@@ -48,7 +48,8 @@ func newServer() *server {
 	mux.HandleFunc("/echo", func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		s.mu.Lock()
-		s.last = request{r.Method, r.URL.RawQuery, r.Header.Get("Content-Type"), string(b)}
+		auth := strings.Join(r.Header.Values("Authorization"), " | ")
+		s.last = request{r.Method, r.URL.RawQuery, r.Header.Get("Content-Type"), auth, string(b)}
 		s.mu.Unlock()
 	})
 	mux.HandleFunc("/num", func(w http.ResponseWriter, r *http.Request) {

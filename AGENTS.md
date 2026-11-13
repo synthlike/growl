@@ -15,6 +15,8 @@ JSON asserts and captures, built to run one request at a time from an editor
 
 - Stay a strict subset of Hurl: a file growl accepts must mean the same thing
   to real hurl, except for the documented GROWL_VARIABLE_ and plain-env variable fallbacks.
+  Where hurl silently drops part of a file (a second aliased section), growl
+  rejects it instead.
   Unsupported Hurl features fail with an error naming the feature and line;
   never ignore them.
 - When adding or changing behavior, add a case to `compat/testdata` and run
